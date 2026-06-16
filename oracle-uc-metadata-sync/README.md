@@ -77,6 +77,8 @@ Connected **as `dbx_fed`**:
 CREATE OR REPLACE VIEW    all_users_filtered AS
   SELECT * FROM sys.all_users WHERE username IN ('SALES','DBX_FED');   -- the schemas to expose
 CREATE OR REPLACE SYNONYM all_users FOR all_users_filtered;
+-- This list is the single source of truth for scope: it drives both schema enumeration AND the
+-- v_metadata helper view (step 4). To expose more schemas later, add them here only.
 ```
 **4. Create 1 helper view** so Databricks can read the comments/annotations. Federation mirrors table
 structure and data, but it does **not** copy Oracle's comments/annotations onto the Unity Catalog objects
@@ -84,6 +86,8 @@ structure and data, but it does **not** copy Oracle's comments/annotations onto 
 this login (step 3 scoped enumeration to your schemas), so it isn't reliably queryable through the catalog —
 this view re-exposes that metadata inside a schema Databricks *does* see. One view carries both comments and
 annotations, tagged by a `kind` column. As `dbx_fed`:
+Scope comes from `all_users_filtered` (step 3) — so the list of schemas you expose lives in **one place**;
+edit it there and both enumeration and this view follow.
 ```sql
 CREATE OR REPLACE VIEW v_metadata AS
   -- table / view comments
@@ -92,20 +96,24 @@ CREATE OR REPLACE VIEW v_metadata AS
          CAST(NULL AS VARCHAR2(128)) AS column_name, CAST(NULL AS VARCHAR2(128)) AS meta_name,
          comments AS meta_value
   FROM all_tab_comments
-  WHERE comments IS NOT NULL AND table_type IN ('TABLE','VIEW') AND owner IN ('SALES')
+  WHERE comments IS NOT NULL AND table_type IN ('TABLE','VIEW')
+    AND owner IN (SELECT username FROM all_users_filtered)
   UNION ALL
   -- column comments
   SELECT 'COMMENT', owner, table_name, NULL, column_name, NULL, comments
   FROM all_col_comments
-  WHERE comments IS NOT NULL AND owner IN ('SALES')
+  WHERE comments IS NOT NULL
+    AND owner IN (SELECT username FROM all_users_filtered)
   UNION ALL
   -- annotations: Oracle 23ai+ only — DROP THIS BLOCK on 19c/21c (comments still sync).
   -- ALL_ANNOTATIONS_USAGE has no object-owner column, so join ALL_OBJECTS to scope by owner.
   SELECT 'ANNOTATION', o.owner, a.object_name, a.object_type, a.column_name, a.annotation_name, a.annotation_value
   FROM all_annotations_usage a
   JOIN all_objects o ON o.object_name = a.object_name AND o.object_type = a.object_type
-  WHERE o.owner IN ('SALES');
+  WHERE o.owner IN (SELECT username FROM all_users_filtered);
 ```
+*(The login's own schema is in `all_users_filtered` too, but it owns no commented objects, so it contributes
+nothing. Each sync still narrows to its own `source.schema`, so one `v_metadata` can serve several schemas.)*
 **5. Verify** (as `dbx_fed`): `SELECT username FROM all_users;` → only your schemas;
 `SELECT kind, count(*) FROM v_metadata GROUP BY kind;` → your comments and annotations.
 
