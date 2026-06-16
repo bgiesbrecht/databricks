@@ -1,0 +1,68 @@
+{
+  "_comment": "Demo configuration for a Genie Space on top of bg.solar.panels. Loaded by update_genie_space.apply_config(). All string fields are plain strings (no list-wrapping); ids and sort order are added automatically by the loader.",
+
+  "text_instruction": "## Vocabulary\nDomain terms for bg.solar.panels:\n- 'Panel' = one row in bg.solar.panels, identified by panel_id.\n- 'Fleet' or 'installed base' = COUNT(*) of all rows (every row is an installed panel).\n- 'Installed capacity' = SUM(wattage). Report in kW (÷1000) or MW (÷1_000_000); default to kW if the user does not specify a unit.\n- 'Wattage tier' = wattage value grouped (e.g. 300W, 400W, 500W).\n- 'Install date' / 'installed' refers to the installed_at column.\n- 'Serial' = serial_no (a string, not numeric).\n\n## Defaults and conventions\n- The fully-qualified table is bg.solar.panels — always use the three-part name.\n- Every row in bg.solar.panels represents an installed panel, so there is no status filter to apply; do not invent one.\n- 'This year' = installed_at >= DATE_TRUNC('year', CURRENT_DATE).\n- 'Last year' = the previous full calendar year, not a trailing 365 days.\n- 'Last month' = the previous full calendar month.\n- When grouping by time, default granularity is monthly (DATE_TRUNC('month', installed_at)) unless the user asks for daily or yearly.\n- Round capacity figures to 1 decimal place when reported in kW or MW.\n\n## Output style\n- When asked 'how many panels', answer with the integer COUNT(*) only.\n- When asked 'how much capacity', answer in kW or MW (one decimal) with the unit.\n- For trend questions, return month-by-month results ordered chronologically.",
+
+  "examples": [
+    {
+      "question": "Total installed panel count",
+      "sql": "SELECT COUNT(*) AS panel_count\nFROM bg.solar.panels"
+    },
+    {
+      "question": "Total installed capacity in kW",
+      "sql": "SELECT ROUND(SUM(wattage) / 1000.0, 1) AS installed_capacity_kw\nFROM bg.solar.panels"
+    },
+    {
+      "question": "Installations by month (count and added capacity in kW)",
+      "sql": "SELECT DATE_TRUNC('month', installed_at)        AS install_month,\n       COUNT(*)                                 AS panels_installed,\n       ROUND(SUM(wattage) / 1000.0, 1)          AS capacity_added_kw\nFROM bg.solar.panels\nGROUP BY 1\nORDER BY install_month"
+    },
+    {
+      "question": "Top wattage tiers across the fleet",
+      "sql": "SELECT wattage,\n       COUNT(*)                                 AS panel_count,\n       ROUND(SUM(wattage) / 1000.0, 1)          AS capacity_kw\nFROM bg.solar.panels\nGROUP BY wattage\nORDER BY panel_count DESC"
+    },
+    {
+      "question": "Year-over-year growth in installed capacity",
+      "sql": "WITH yearly AS (\n  SELECT YEAR(installed_at)                     AS install_year,\n         SUM(wattage) / 1000.0                  AS capacity_kw\n  FROM bg.solar.panels\n  GROUP BY 1\n)\nSELECT install_year,\n       ROUND(capacity_kw, 1)                                  AS capacity_kw,\n       ROUND(LAG(capacity_kw) OVER (ORDER BY install_year), 1) AS prev_year_kw,\n       ROUND((capacity_kw - LAG(capacity_kw) OVER (ORDER BY install_year))\n             / LAG(capacity_kw) OVER (ORDER BY install_year) * 100, 1) AS yoy_growth_pct\nFROM yearly\nORDER BY install_year"
+    },
+    {
+      "question": "Pairs of panels installed on the same day (self-join)",
+      "sql": "-- Self-join bg.solar.panels to itself to find pairs of distinct panels\n-- that were installed on the same date. p1.panel_id < p2.panel_id\n-- avoids self-pairing and dedupes (A,B)/(B,A).\nSELECT p1.installed_at,\n       p1.panel_id  AS panel_a,\n       p1.wattage   AS wattage_a,\n       p2.panel_id  AS panel_b,\n       p2.wattage   AS wattage_b\nFROM bg.solar.panels AS p1\nJOIN bg.solar.panels AS p2\n  ON p1.installed_at = p2.installed_at\n AND p1.panel_id     < p2.panel_id\nORDER BY p1.installed_at, p1.panel_id, p2.panel_id"
+    }
+  ],
+
+  "joins": [
+    {
+      "left":  {"table": "bg.solar.panels", "alias": "panels"},
+      "right": {"table": "bg.solar.panels", "alias": "panels_2"},
+      "on": "`panels`.`panel_id` = `panels_2`.`panel_id`",
+      "relationship_type": "FROM_RELATIONSHIP_TYPE_MANY_TO_ONE",
+      "instruction": "Used for testing."
+    }
+  ],
+
+  "sql_filters": [
+    {
+      "display_name": "High Wattage",
+      "sql": "panels.wattage >= 5000",
+      "instruction": "Filter for panels with wattage >= 5000 W.",
+      "synonyms": ["wattage", "high wattage"]
+    }
+  ],
+
+  "sql_expressions": [
+    {
+      "display_name": "Install year",
+      "sql": "date_trunc(panels.installed_at, 'YEAR')",
+      "instruction": "Convenient year field for when a panel was installed.",
+      "synonyms": ["Year", "install year"]
+    }
+  ],
+
+  "sample_questions": [
+    "How many panels are installed in total?",
+    "What's our total installed capacity in kW?",
+    "Show me panel installations by month.",
+    "Which wattage tier do we have the most of?",
+    "How did installed capacity change year over year?"
+  ]
+}
