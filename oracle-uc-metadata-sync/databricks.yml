@@ -1,0 +1,89 @@
+# Databricks Asset Bundle (DAB) for the Oracle -> Unity Catalog metadata sync.
+# A DAB packages code + jobs + config as one deployable unit. Deploy with:
+#   databricks bundle validate -t dev
+#   databricks bundle deploy   -t dev
+#   databricks bundle run setup -t dev
+#   databricks bundle run sync  -t dev -- --sync_name sales --apply true
+# See README.md ("Deploy as a Databricks Asset Bundle") for the full walkthrough + prerequisites.
+
+bundle:
+  name: oracle-uc-metadata-sync
+
+# Values a customer overrides per environment (CLI: --var, or per-target `variables:` below).
+variables:
+  metadata_schema:
+    description: Control-plane catalog.schema that holds config, mapping, registry, and change log.
+    default: bg.metadata_syn
+  notification_email:
+    description: Email address for job-failure alerts (leave blank to disable).
+    default: ""
+
+targets:
+  # Development: deploys under your own /Users/<you>/.bundle/... ; jobs are prefixed [dev <you>].
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+
+  # Production: deploy with `-t prod`. Set run_as to a service principal for real deployments.
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+      root_path: /Workspace/Shared/oracle-uc-metadata-sync/${bundle.target}
+    # run_as:
+    #   service_principal_name: <sp-application-id>
+
+resources:
+  jobs:
+
+    # One-time / on-config-change: builds the control plane and loads sync_config.yaml.
+    setup:
+      name: "[${bundle.target}] oracle-uc-sync :: setup"
+      tasks:
+        - task_key: setup
+          notebook_task:
+            notebook_path: src/00_setup.py
+            base_parameters:
+              # the bundle's deployed files live under ${workspace.file_path}
+              yaml_path: ${workspace.file_path}/config/sync_config.yaml
+              metadata_schema: ${var.metadata_schema}
+
+    # The metadata sync. Parameterized (sync_name, apply) and schedulable.
+    # Defaults are SAFE: apply=false (dry run). Set apply=true (and unpause) to write.
+    sync:
+      name: "[${bundle.target}] oracle-uc-sync :: sync"
+      parameters:
+        - name: sync_name
+          default: sales
+        - name: apply
+          default: "false"
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"   # 06:00 UTC daily
+        timezone_id: UTC
+        pause_status: PAUSED                      # customer unpauses when ready
+      # Add failure alerts by uncommenting and setting an address (blank breaks deploy):
+      # email_notifications:
+      #   on_failure:
+      #     - you@example.com
+      tasks:
+        - task_key: sync
+          notebook_task:
+            notebook_path: src/sync_oracle_metadata.py
+            base_parameters:
+              sync_name: "{{job.parameters.sync_name}}"
+              apply: "{{job.parameters.apply}}"
+              metadata_schema: ${var.metadata_schema}
+
+    # Optional end-to-end demo (changes an Oracle comment/annotation via JDBC, then syncs).
+    demo:
+      name: "[${bundle.target}] oracle-uc-sync :: demo"
+      tasks:
+        - task_key: demo
+          notebook_task:
+            notebook_path: src/demo_oracle_metadata_sync.py
+            base_parameters:
+              sync_name: sales
+              secret_scope: bg_oracle_23ai
+              metadata_schema: ${var.metadata_schema}

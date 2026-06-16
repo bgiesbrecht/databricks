@@ -1,0 +1,5 @@
+# Databricks Asset Bundle local state / build artifacts
+.databricks/
+
+# macOS
+.DS_Store

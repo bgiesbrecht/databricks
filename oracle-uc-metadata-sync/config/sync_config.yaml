@@ -1,0 +1,46 @@
+# Oracle -> Unity Catalog metadata sync configuration.
+# source.*   = the DATA: the real Oracle app schema, federated directly (connection user has SELECT).
+# metadata.* = where the owner-filtered v_metadata helper view lives (the read-only connection user's schema).
+# These may be the same connection (as below) or two different connections (data vs metadata).
+# Annotations are ALWAYS captured into the registry; applied as UC tags only when apply_to_objects=true.
+
+syncs:
+  - name: sales                       # zero-copy views in bg.sales
+    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
+    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
+    target:   {catalog: bg, type: VIEW}
+    comments: true
+    annotations: {enabled: true, apply_to_objects: true}
+    objects:
+      default: all
+      exclude: []
+      overrides: []                   # per-object remaps; loaded into oracle_to_uc_mapping by 00_setup. Example:
+      #   - {oracle_object: FOO, target_catalog: cat_a, target_schema: sch_a, target_object: foo}
+    hooks: {on_change_notebook: ""}
+
+  - name: sales_mv                    # materialized copies in bg.sales_mv
+    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
+    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
+    target:   {catalog: bg, type: MATERIALIZED_VIEW}
+    comments: true
+    annotations: {enabled: true, apply_to_objects: true}
+    objects: {default: all, exclude: [], overrides: []}
+    hooks: {on_change_notebook: ""}
+
+  - name: sales_table                 # static CTAS snapshot tables in bg.sales_tbl
+    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
+    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
+    target:   {catalog: bg, type: TABLE}
+    comments: true
+    annotations: {enabled: true, apply_to_objects: true}
+    objects: {default: all, exclude: [], overrides: []}
+    hooks: {on_change_notebook: ""}
+
+# Promotion policy: default route is REGISTRY (registry-only). Only names listed here are promoted.
+annotation_promotion:
+  - {name: PII,            route: TAG, scope: COLUMN}
+  - {name: Sensitivity,    route: TAG, scope: COLUMN}
+  - {name: Classification, route: TAG, scope: BOTH}
+  - {name: Data_Domain,    route: TAG, scope: TABLE}
+  - {name: Owner_Team,     route: TAG, scope: TABLE}
+  - {name: Geo,            route: TAG, scope: COLUMN}
