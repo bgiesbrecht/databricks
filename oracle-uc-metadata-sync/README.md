@@ -20,7 +20,7 @@ This is set up **once**; after that it runs on a schedule. Each step links to fu
 | # | Do this |
 |---|---------|
 | 1 | Create a **read-only** Oracle login + one helper view (read-only — your data is not modified). Copy-paste SQL is in §1. |
-| 2 | (a) Allowlist Databricks' network on the Oracle firewall *(§2b)*; (b) create a UC **connection** to Oracle using the login from step 1, and a **foreign catalog** over it *(§2a)*; (c) run the **grants** in §2c. |
+| 2 | Allowlist Databricks' network on the Oracle firewall *(§2b)*, create a UC **connection** + **foreign catalog** using the step-1 login *(§2a)*, and run the **grants** *(§2c)*. |
 | 3 | Edit `config/sync_config.yaml`: point it at the connection + schema, and list which annotations should become tags. *(detail: §3)* |
 | 4 | Run it — **either** import the notebooks into a workspace and run them, **or** deploy the bundle. Preview with `apply=false`, then `apply=true`. *(detail: §4)* |
 | 5 | Happy with the result? Unpause the schedule in the `sync` job. Done. |
@@ -80,14 +80,13 @@ CREATE OR REPLACE SYNONYM all_users FOR all_users_filtered;
 -- This list is the single source of truth for scope: it drives both schema enumeration AND the
 -- v_metadata helper view (step 4). To expose more schemas later, add them here only.
 ```
-**4. Create 1 helper view** so Databricks can read the comments/annotations. Federation mirrors table
-structure and data, but it does **not** copy Oracle's comments/annotations onto the Unity Catalog objects
-(federated tables show NULL comments). The data dictionary that holds them isn't an enumerated schema for
-this login (step 3 scoped enumeration to your schemas), so it isn't reliably queryable through the catalog —
-this view re-exposes that metadata inside a schema Databricks *does* see. One view carries both comments and
-annotations, tagged by a `kind` column. As `dbx_fed`:
-Scope comes from `all_users_filtered` (step 3) — so the list of schemas you expose lives in **one place**;
-edit it there and both enumeration and this view follow.
+**4. Create 1 helper view** that re-exposes the comments/annotations so Databricks can read them. As `dbx_fed`:
+
+> *Why this is needed:* federation mirrors table structure and data, but it does **not** copy Oracle's
+> comments/annotations onto the Unity Catalog objects (federated tables show NULL comments). This view
+> surfaces them inside a schema Databricks can see. It scopes itself from `all_users_filtered` (step 3), so
+> the schemas you expose are defined in **one place**. One view carries both comments and annotations,
+> tagged by a `kind` column.
 ```sql
 CREATE OR REPLACE VIEW v_metadata AS
   -- table / view comments
@@ -155,7 +154,8 @@ GRANT CREATE FOREIGN CATALOG ON CONNECTION `bg-oracle-ro` TO `<sync_principal>`;
 GRANT USE CONNECTION ON CONNECTION `bg-oracle-ro` TO `<sync_principal>`;
 GRANT USE CATALOG, USE SCHEMA, SELECT ON CATALOG `bg-oracle-ro_catalog` TO `<sync_principal>`;
 
--- target catalog for the synced views/MVs/tables + tags + control plane (simplest if the principal owns it):
+-- target catalog for the synced views/MVs/tables + tags + the control-plane schema `metadata_syn`
+-- (the tool's bookkeeping tables — created by the `setup` job; see §7). Simplest if the principal owns it:
 GRANT ALL PRIVILEGES ON CATALOG `bg` TO `<sync_principal>`;
 -- ...or least-privilege instead of ALL PRIVILEGES:
 -- GRANT USE CATALOG, CREATE SCHEMA, APPLY TAG ON CATALOG `bg` TO `<sync_principal>`;
@@ -227,6 +227,7 @@ annotation_promotion:                                    # default = registry-on
 | `objects.exclude` | Object names to skip. | `[]` |
 | `objects.overrides` | Per-object renames/remaps — see **Renaming objects**. | `[]` |
 | `hooks.on_change_notebook` | Workspace path of a notebook to run after a sync that changed something (receives `run_id`, `sync_name`). Blank = none. | `""` |
+| `hooks.genie_space_id` | *(optional)* Genie space the `genie_push` hook updates — see §10. Blank = hook no-ops. | `""` |
 
 ### Target type — which to choose
 | `target.type` | What you get | Use when |
@@ -287,8 +288,9 @@ It creates three jobs: **`setup`**, **`sync`** (parameterized `sync_name`/`apply
 oracle-uc-metadata-sync/
 ├── databricks.yml          # the bundle: variables, targets (dev/prod), jobs
 ├── README.md / ROADMAP.md
+├── demo_genie_pipeline.py  # optional: create a Genie space for the §10 integration
 ├── config/sync_config.yaml # the sync config (§3)
-└── src/                    # the notebooks (00_setup, sync_oracle_metadata, demo_oracle_metadata_sync)
+└── src/                    # 00_setup, sync_oracle_metadata, demo_oracle_metadata_sync, hooks/ (§10)
 ```
 ```bash
 databricks auth login --host https://<your-workspace>
@@ -363,6 +365,8 @@ automatic (the mapping).
 | `src/00_setup.py` | Idempotent: creates the control plane (tables, resolver, default mapping) + loads the YAML |
 | `src/sync_oracle_metadata.py` | **The sync engine** — run per `sync_name` (dry-run by default) |
 | `src/demo_oracle_metadata_sync.py` | End-to-end demo that uses the engine (version-aware) |
+| `src/hooks/genie_push.py` + `update_genie_space.py` | *(optional)* the Genie integration hook + its SDK — see §10 |
+| `demo_genie_pipeline.py` | *(optional)* create a Genie space over the synced tables — see §10 |
 
 **Control plane** — tables/views created in `bg.metadata_syn`:
 | Object | Role |
@@ -417,3 +421,57 @@ metadata-only mode).
 | A view didn't get built / columns missing | source object not visible to the connection login (missing `SELECT`), or the `v_metadata` helper view missing |
 | `__materialization_*` / `event_log_*` tables under an MV schema | normal materialized-view internals — ignore |
 | Annotation step "skipped" | source is pre-23ai (no ANNOTATION rows in `v_metadata`) — expected; comments still sync |
+
+---
+
+## 10. Optional integration — keep a Genie space in sync
+A post-sync hook can push the freshly-synced metadata into a **Genie space** so the room stays current as
+Oracle changes. Two halves:
+
+- **Comments → automatic.** The sync already writes table/column comments onto the UC objects, and Genie reads
+  UC comments directly — nothing extra to push. (`CREATE OR REPLACE VIEW` is Genie-safe: same UC name keeps
+  the room's table attached.)
+- **Joins/instructions → explicit, from annotations.** Oracle annotations carry the join criteria. The hook
+  reads them from the registry and writes the room's join definitions via the Genie API.
+
+### `RELATED_TO` annotation convention
+Put a **column-level** annotation named `RELATED_TO` on the foreign-key column. The annotated table/column is
+the **left** side; the value names the **right** side:
+```
+RELATED_TO = '<right_table>.<right_col>[;rt=<MANY_TO_ONE|ONE_TO_MANY|ONE_TO_ONE|MANY_TO_MANY>]'
+```
+Example — on `ORDERS.CUSTOMER_ID` (Oracle 23ai+):
+```sql
+ALTER TABLE orders MODIFY (customer_id
+  ANNOTATIONS (ADD OR REPLACE RELATED_TO 'customers.customer_id;rt=MANY_TO_ONE'));
+```
+The hook resolves both sides to their UC names (via `resolve_uc_name`) and emits a join
+`ON orders.customer_id = customers.customer_id`. Relationship defaults to `MANY_TO_ONE`. `RELATED_TO` is a
+**neutral** relationship annotation — Oracle code can read it for its own purposes too; it isn't Genie-specific.
+Governance annotations (`PII`, `Classification`, …) are untouched by the hook and keep flowing to the
+registry/tags as usual.
+
+### Wiring
+*Prerequisite: run a sync first (§4) so the target tables (e.g. `bg.sales.*`) exist — the room is created over them.*
+1. **Create the room** over the synced tables and note its `space_id`:
+   ```bash
+   python3 demo_genie_pipeline.py --warehouse-id <id>      # seeds vocab + sample questions, no joins yet
+   ```
+2. **Point the sync at it** — in `config/sync_config.yaml`, on the `sales` sync:
+   ```yaml
+   hooks: {on_change_notebook: "hooks/genie_push", genie_space_id: "<space_id>"}
+   ```
+   Re-run `setup` to load it.
+3. **From now on**, any `apply=true` run that changes something fires `src/hooks/genie_push.py`, which rebuilds
+   the room's joins from `RELATED_TO` annotations (idempotent; replaces only the joins section, leaving
+   human-authored instructions/examples/sample questions intact).
+
+### Components
+| Artifact | Role |
+|---|---|
+| `src/hooks/genie_push.py` | The hook — registry `RELATED_TO` → Genie join specs; called via `on_change_notebook` |
+| `src/hooks/update_genie_space.py` | Vendored Genie-space SDK (`GenieSpaces` client + config helpers) |
+| `demo_genie_pipeline.py` | One-shot: create the room over `bg.sales` with seed config |
+
+> The Genie **Create/Update** APIs are **Beta** (Nov 2025) — treat the request/response shape as subject to
+> change. The hook degrades safely: if a sync has no `genie_space_id`, it no-ops.

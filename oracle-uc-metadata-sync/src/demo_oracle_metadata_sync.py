@@ -9,9 +9,10 @@
 # MAGIC **Version-aware:** on **Oracle 23ai/26ai** it demos comments **and** annotations→tags; on
 # MAGIC **pre-23ai** (e.g. 19c) it auto-detects the absence of annotations and demos **comments only**.
 # MAGIC
-# MAGIC Pick the source via `sync_name` (+ matching `secret_scope`):
-# MAGIC - `sales` → 26ai (`bg-oracle-23ai`), scope `bg_oracle_23ai`  *(comments + annotations)*
-# MAGIC - a pre-23ai sync (e.g. `sales_19c_compat` → `bg-oracle-01`), scope `bg_oracle_demo`  *(comments only)*
+# MAGIC Set `sync_name` to the sync you want to demo and `secret_scope` to a Databricks secret scope holding
+# MAGIC **writeable** Oracle creds (keys: `host`, `port`, `service`, `username`, `password`). The demo makes
+# MAGIC source-side edits, and the read-only federation login can't write — so use the data owner's credentials
+# MAGIC here, not the sync's read-only login.
 
 # COMMAND ----------
 
@@ -24,7 +25,7 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 dbutils.widgets.text("sync_name", "sales", "Sync to demo (from sync_config)")
-dbutils.widgets.text("secret_scope", "bg_oracle_23ai", "Secret scope with the source Oracle creds")
+dbutils.widgets.text("secret_scope", "oracle_source_creds", "Secret scope with WRITEABLE source Oracle creds (host/port/service/username/password)")
 dbutils.widgets.text("engine", "./sync_oracle_metadata", "Sync engine notebook (relative)")
 dbutils.widgets.text("metadata_schema", "bg.metadata_syn", "Control-plane schema")
 SYNC = dbutils.widgets.get("sync_name"); SCOPE = dbutils.widgets.get("secret_scope")

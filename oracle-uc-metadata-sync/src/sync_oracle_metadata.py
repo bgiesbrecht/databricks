@@ -49,6 +49,7 @@ stmts = []     # comment apply statements: (label, sql)
 rebuilt_objects = set()
 tag_ops, tag_carry = [], []   # tag plan (applied + recorded from real results in the apply cell)
 changed_c = []                # comment-changed objects (set by the comments leg)
+registry_changed = False      # any annotation registry row new/changed/removed (set by the annotation leg)
 
 def prev_state(kind):
     return {(r.oracle_object, r.oracle_column, r.meta_key): r for r in spark.table(f"{MS}.metadata_state")
@@ -154,15 +155,17 @@ if c.sync_annotations:
             cur_ann[(obj, col, r.an)] = (r.otype, col, r.av, uc)
         for key, (otype, col, av, uc) in cur_ann.items():
             obj, col2, an = key; p = prev_reg.get(key)
+            if p is None or (p.annotation_value or '') != (av or ''): registry_changed = True
             fs = p.first_seen_at if p else now
             lc = now if (p is None or (p.annotation_value or '') != (av or '')) else p.last_changed_at
             lvl = 'TABLE' if col2 is None else 'COLUMN'
             registry_rows.append((SYNC, c.source_schema.upper(), obj, col2, lvl, otype, an, av, uc, True, fs, lc, now))
         for key, p in prev_reg.items():
             if key not in cur_ann:
+                registry_changed = True
                 registry_rows.append((SYNC, p.oracle_schema, p.oracle_object, p.oracle_column, p.level, p.object_type,
                                       p.annotation_name, p.annotation_value, p.uc_name, False, p.first_seen_at, now, now))
-        print(f"annotations in registry: {sum(1 for r in registry_rows if r[9])} active")
+        print(f"annotations in registry: {sum(1 for r in registry_rows if r[9])} active (registry_changed={registry_changed})")
 
         # tag promotion — built as per-key ops; recorded from ACTUAL apply results (governed-tag safe)
         if c.apply_annotations_to_objects:
@@ -294,10 +297,11 @@ summary = {"run_id": run_id, "sync": SYNC, "target_type": tt, "applied": do_appl
            "tags_blocked": [b[0] for b in tag_blocked],
            "comment_failures": [f[0] for f in comment_failed],
            "registry_active": sum(1 for r in registry_rows if r[9]) if c.sync_annotations else 0,
+           "registry_changed": registry_changed,
            "affected_objects": sorted({h[3] for h in history} | {o[4] for o in tag_ops})}
-if do_apply and (history or tag_history) and (c.on_change_notebook or "").strip():
+if do_apply and (history or tag_history or registry_changed) and (c.on_change_notebook or "").strip():
     try:
-        hook_res = dbutils.notebook.run(c.on_change_notebook, 300, {"run_id": run_id, "sync_name": SYNC})
+        hook_res = dbutils.notebook.run(c.on_change_notebook, 300, {"run_id": run_id, "sync_name": SYNC, "metadata_schema": MS})
         summary["hook_result"] = hook_res
     except Exception as e:
         summary["hook_error"] = str(e)[:200]

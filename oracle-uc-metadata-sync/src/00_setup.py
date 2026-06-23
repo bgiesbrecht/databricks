@@ -63,7 +63,7 @@ spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.sync_config (
   metadata_catalog STRING, metadata_schema STRING,
   target_catalog STRING, target_type STRING, sync_comments BOOLEAN, sync_annotations BOOLEAN,
   apply_annotations_to_objects BOOLEAN, object_include ARRAY<STRING>, object_exclude ARRAY<STRING>,
-  on_change_notebook STRING, enabled BOOLEAN, updated_at TIMESTAMP
+  on_change_notebook STRING, genie_space_id STRING, enabled BOOLEAN, updated_at TIMESTAMP
 ) COMMENT 'One row per sync job; loaded from sync_config.yaml. source_*=data (federated app schema); metadata_*=where the v_metadata helper view lives.'""")
 
 spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.annotation_promotion_policy (
@@ -135,7 +135,8 @@ for s in cfg.get("syncs", []):
         tgt.get("catalog"), tgt.get("type"), bool(s.get("comments", True)),
         bool(ann.get("enabled", False)), bool(ann.get("apply_to_objects", False)),
         list(objs.get("include", []) or []), list(objs.get("exclude", []) or []),
-        hooks.get("on_change_notebook", "") or "", bool(s.get("enabled", True))))
+        hooks.get("on_change_notebook", "") or "", hooks.get("genie_space_id", "") or "",
+        bool(s.get("enabled", True))))
 
 sync_schema = StructType([
     StructField("name", StringType()), StructField("source_connection", StringType()),
@@ -145,7 +146,8 @@ sync_schema = StructType([
     StructField("sync_comments", BooleanType()), StructField("sync_annotations", BooleanType()),
     StructField("apply_annotations_to_objects", BooleanType()),
     StructField("object_include", ArrayType(StringType())), StructField("object_exclude", ArrayType(StringType())),
-    StructField("on_change_notebook", StringType()), StructField("enabled", BooleanType())])
+    StructField("on_change_notebook", StringType()), StructField("genie_space_id", StringType()),
+    StructField("enabled", BooleanType())])
 (spark.createDataFrame(sync_rows, sync_schema).withColumn("updated_at", F.current_timestamp())
    .write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{MS}.sync_config"))
 

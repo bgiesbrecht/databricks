@@ -16,7 +16,10 @@ syncs:
       exclude: []
       overrides: []                   # per-object remaps; loaded into oracle_to_uc_mapping by 00_setup. Example:
       #   - {oracle_object: FOO, target_catalog: cat_a, target_schema: sch_a, target_object: foo}
-    hooks: {on_change_notebook: ""}
+    # Optional: after a sync that changed something, push Genie config (joins from RELATED_TO annotations)
+    # to a Genie space. Leave genie_space_id blank to disable; set it to your space id once you create the
+    # room (demo_genie_pipeline.py creates one and prints the id). See README §10.
+    hooks: {on_change_notebook: "hooks/genie_push", genie_space_id: ""}
 
   - name: sales_mv                    # materialized copies in bg.sales_mv
     source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}

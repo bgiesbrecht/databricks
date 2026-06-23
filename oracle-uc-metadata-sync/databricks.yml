@@ -77,6 +77,8 @@ resources:
               metadata_schema: ${var.metadata_schema}
 
     # Optional end-to-end demo (changes an Oracle comment/annotation via JDBC, then syncs).
+    # Requires a secret scope holding WRITEABLE Oracle creds (host/port/service/username/password) —
+    # set secret_scope below to your scope name. The read-only federation login can't write.
     demo:
       name: "[${bundle.target}] oracle-uc-sync :: demo"
       tasks:
@@ -85,5 +87,5 @@ resources:
             notebook_path: src/demo_oracle_metadata_sync.py
             base_parameters:
               sync_name: sales
-              secret_scope: bg_oracle_23ai
+              secret_scope: oracle_source_creds
               metadata_schema: ${var.metadata_schema}
