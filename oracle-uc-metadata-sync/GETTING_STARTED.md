@@ -1,4 +1,4 @@
-# Oracle → Unity Catalog metadata sync — Getting Started
+# Oracle → Unity Catalog metadata sync — Getting Started (zero to hero)
 
 A complete, self-contained guide. No prior reading required. By the end you'll understand what the tool is,
 the pieces it's made of, how they fit, and how to set it up and run it — with sample configs to copy.
@@ -56,21 +56,40 @@ There are **two ways** it can put metadata into Databricks:
 - **Annotation** (Oracle 23ai+) — a *named* governance label (e.g. `PII`, `Classification`, or your own like `RELATED_TO`). **Everything** is captured into the **registry** table; a curated subset you choose is promoted to **UC tags**.
 - **UC tag** — Databricks' key-value governance label (drives search, policies, Genie). This is where promoted annotations land.
 
+### Files in the repo
+| File | What it does | Required to run the sync? |
+|---|---|---|
+| `src/sync_oracle_metadata.py` | **The sync engine** — reads Oracle metadata via `v_metadata`, applies comments + tags, tracks changes. | ✅ **Required** |
+| `src/00_setup.py` | Builds the control plane (`bg.metadata_syn`) and loads `sync_config.yaml`. Run once / after any config edit. | ✅ **Required** |
+| `config/sync_config.yaml` | Your configuration — the `syncs` and the `annotation_promotion` policy. | ✅ **Required** |
+| `src/run_pipeline.py` | One-notebook runner (props: `setup` / `sync_name`=name or `ALL` / `apply`) that orchestrates `00_setup` + the engine in a single task. | ⭐ Optional (convenience / scheduled job) |
+| `databricks.yml` | Databricks Asset Bundle definition (jobs + targets). | Optional — only for the **bundle** run path (§5 Option B); not needed to run from the workspace. |
+| `src/hooks/genie_push.py` | Post-sync hook that pushes joins (from `RELATED_TO`) into a Genie space. | Optional — only if you use the **Genie** integration (§ see README §10). |
+| `src/hooks/update_genie_space.py` | The Genie-space SDK the hook calls. | Optional — Genie only (sits beside the hook). |
+| `demo_genie_pipeline.py` | One-shot script to create a Genie space over your synced tables. | Optional — Genie only. |
+| `src/demo_oracle_metadata_sync.py` | End-to-end **demo**: edits a comment/annotation in Oracle, then syncs (needs writeable Oracle creds). | Optional — demo only. |
+| `README.md`, `GETTING_STARTED.md`, `PIPELINE_BASICS.md`, `GENIE_UPDATE_GUIDE.md`, `ROADMAP.md` | Documentation. | No |
+
+**Minimum to run a sync:** `src/sync_oracle_metadata.py` + `src/00_setup.py` + `config/sync_config.yaml`.
+
+> Two things are **not** repo files: the Oracle-side **`v_metadata` helper view** + read-only login (created in
+> Oracle — see §4 Step 1), and the `.databricks/` folder (local bundle build state, git-ignored).
+
 ---
 
 ## 3. How it works (one sync run)
 
 ```
- Oracle                                  Databricks
- ┌───────────────────┐   federation     ┌───────────────────────────────────────────┐
- │ comments          │  (read-only)     │ sync_oracle_metadata                        │
- │ annotations  ───────────────────────►│  1. read v_metadata (comments + annotations)│
- │ (via v_metadata)  │                  │  2. resolve each Oracle object → UC name    │
- └───────────────────┘                  │  3. comments → UC objects                   │
-                                         │     annotations → registry (+ promoted tags)│
-                                         │  4. diff vs. state, write change log        │
-                                         │  5. (optional) fire genie_push hook         │
-                                         └───────────────────────────────────────────┘
+ Oracle                                    Databricks
+ ┌───────────────────┐   federation       ┌──────────────────────────────────────────────┐
+ │ comments          │  (read-only)       │ sync_oracle_metadata                         │
+ │ annotations  ─────────────────────────►│  1. read v_metadata (comments + annotations) │
+ │ (via v_metadata)  │                    │  2. resolve each Oracle object → UC name     │
+ └───────────────────┘                    │  3. comments → UC objects                    │
+                                          │     annotations → registry (+ promoted tags) │
+                                          │  4. diff vs. state, write change log         │
+                                          │  5. (optional) fire genie_push hook          │
+                                          └──────────────────────────────────────────────┘
 ```
 
 1. **Read** Oracle comments/annotations through the `v_metadata` helper view.
@@ -291,7 +310,7 @@ syncs:
   - name: sales
     source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
     metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, schema: sales}      # no `type` — metadata-only default; real type auto-detected
+    target:   {catalog: bg, schema: sales}
 ```
 Applies comments to the **existing** objects in `bg.sales` (every object in the Oracle schema). Comments are
 on by default; annotations are off until enabled. Add `metadata_only: false` (and a `target.type`) to
