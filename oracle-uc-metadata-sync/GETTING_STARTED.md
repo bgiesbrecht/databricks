@@ -1,4 +1,4 @@
-# Oracle → Unity Catalog metadata sync — Getting Started (zero to hero)
+# Oracle → Unity Catalog metadata sync — Getting Started
 
 A complete, self-contained guide. No prior reading required. By the end you'll understand what the tool is,
 the pieces it's made of, how they fit, and how to set it up and run it — with sample configs to copy.
