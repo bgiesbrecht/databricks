@@ -1,45 +1,34 @@
 # Oracle -> Unity Catalog metadata sync configuration.
+#
+# DEFAULT MODE IS METADATA-ONLY: the tool applies comments/tags to UC objects that ALREADY EXIST
+# (built by Lakeflow Connect, by hand, etc.) and creates nothing. It auto-detects each object's real type
+# (table / MV / view), so you don't declare it. To instead have the tool CREATE objects from the federated
+# source, add `metadata_only: false` and a `target.type` (VIEW | MATERIALIZED_VIEW | TABLE) — see GETTING_STARTED.md §6.
+#
+# Mapping: each sync maps its Oracle `source.schema` -> `target.catalog`.`target.schema`; objects land at
+# <lower(name)> there. Add `objects.overrides` to send specific objects elsewhere. `00_setup` loads this;
+# re-run it after any edit (the engine reads the loaded config table, not this file).
+#
 # source.*   = the DATA: the real Oracle app schema, federated directly (connection user has SELECT).
 # metadata.* = where the owner-filtered v_metadata helper view lives (the read-only connection user's schema).
-# These may be the same connection (as below) or two different connections (data vs metadata).
 # Annotations are ALWAYS captured into the registry; applied as UC tags only when apply_to_objects=true.
 
 syncs:
-  - name: sales                       # zero-copy views in bg.sales
+  - name: sales                       # SALES.* (existing UC objects) in bg.sales
     source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
     metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, type: VIEW}
+    target:   {catalog: bg, schema: sales}     # no `type` needed in metadata-only mode (auto-detected)
     comments: true
     annotations: {enabled: true, apply_to_objects: true}
     objects:
       default: all
-      exclude: []
-      overrides: []                   # per-object remaps; loaded into oracle_to_uc_mapping by 00_setup. Example:
-      #   - {oracle_object: FOO, target_catalog: cat_a, target_schema: sch_a, target_object: foo}
-    # Optional: after a sync that changed something, push Genie config (joins from RELATED_TO annotations)
-    # to a Genie space. Leave genie_space_id blank to disable; set it to your space id once you create the
-    # room (demo_genie_pipeline.py creates one and prints the id). See README §10.
+      # Optional per-object override — point one object at a different catalog/schema/name:
+      # overrides:
+      #   - {oracle_object: CUSTOMERS, target_catalog: bg, target_schema: sales, target_object: customers}
+    # Optional Genie integration (README §10). Blank genie_space_id disables the hook.
     hooks: {on_change_notebook: "hooks/genie_push", genie_space_id: ""}
 
-  - name: sales_mv                    # materialized copies in bg.sales_mv
-    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
-    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, type: MATERIALIZED_VIEW}
-    comments: true
-    annotations: {enabled: true, apply_to_objects: true}
-    objects: {default: all, exclude: [], overrides: []}
-    hooks: {on_change_notebook: ""}
-
-  - name: sales_table                 # static CTAS snapshot tables in bg.sales_tbl
-    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
-    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, type: TABLE}
-    comments: true
-    annotations: {enabled: true, apply_to_objects: true}
-    objects: {default: all, exclude: [], overrides: []}
-    hooks: {on_change_notebook: ""}
-
-# Promotion policy: default route is REGISTRY (registry-only). Only names listed here are promoted.
+# Promotion policy: default route is REGISTRY (registry-only). Only names listed here become UC tags.
 annotation_promotion:
   - {name: PII,            route: TAG, scope: COLUMN}
   - {name: Sensitivity,    route: TAG, scope: COLUMN}

@@ -23,7 +23,7 @@ This is set up **once**; after that it runs on a schedule. Each step links to fu
 | 2 | Allowlist Databricks' network on the Oracle firewall *(§2b)*, create a UC **connection** + **foreign catalog** using the step-1 login *(§2a)*, and run the **grants** *(§2c)*. |
 | 3 | Edit `config/sync_config.yaml`: point it at the connection + schema, and list which annotations should become tags. *(detail: §3)* |
 | 4 | Run it — **either** import the notebooks into a workspace and run them, **or** deploy the bundle. Preview with `apply=false`, then `apply=true`. *(detail: §4)* |
-| 5 | Happy with the result? Unpause the schedule in the `sync` job. Done. |
+| 5 | Happy with the result? In the `pipeline` job set `apply=true` and unpause its schedule. Done. |
 
 **Want to see it work first?** After steps 1–2, run the **`demo`** job — it changes a comment/annotation in
 Oracle and shows it flow into Databricks end-to-end.
@@ -181,16 +181,38 @@ This one file controls everything the tool does. It has two parts: **`syncs`** (
 can run) and **`annotation_promotion`** (which annotations become tags). Edit it, then run the `setup` job
 (§4) to load it. You run a sync by its `name`.
 
+### The three blocks: `source`, `metadata`, `target`
+Each sync points at three places:
+
+| Block | What it is | Example |
+|---|---|---|
+| `source` | **Where the data is** — the Oracle app schema (federated) whose tables/columns you're describing. | `bg-oracle-ro_catalog.sales` |
+| `metadata` | **Where the comments/annotations are read from** — the schema holding the `v_metadata` helper view. | `bg-oracle-ro_catalog.dbx_fed` |
+| `target` | **Where the UC objects you're decorating live.** | `bg.sales` |
+
+`metadata` points at the **`v_metadata` helper view** (created in §1 — it exposes comments + annotations as rows).
+The engine reads comments/annotations from `{metadata.catalog}.{metadata.schema}.v_metadata`, and table/column
+structure from `{source.catalog}.{source.schema}.<object>`. **Why it's separate from `source`:** the helper
+view is built on Oracle's data dictionary, which Oracle won't let you expose from the app schema (`ORA-01720`),
+so it must be **owned by the read-only login** in **its own schema** (e.g. `dbx_fed`), not the data's schema
+(`sales`). Omit `metadata` and it defaults to `source`. *(Advanced: `metadata` can point at a different
+connection/catalog — a separate "metadata" login — but most setups use one connection, just a different schema.)*
+
+> **Default mode is metadata-only:** the tool applies metadata to UC objects that **already exist** (objects
+> map by `source.schema` → `target.catalog`.`target.schema`) and creates nothing. To have it **create** the
+> objects from the federated source, add `metadata_only: false` to the sync.
+
 ### Minimal — the smallest sync that works
 ```yaml
 syncs:
   - name: sales
     source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
     metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, type: VIEW}
+    target:   {catalog: bg, schema: sales}          # no `type` needed — metadata-only, auto-detected
 ```
-That syncs **comments** for every table/view in the schema, as Databricks views. Comments are on by default;
-annotations are **off** until you enable them; `objects` defaults to *all*. Add the fields below to do more.
+That applies **comments** to the existing objects in `bg.sales`. Comments are on by default; annotations are
+**off** until you enable them; `objects` defaults to *all*. Add `metadata_only: false` (and a `target.type`)
+to create the objects instead.
 
 ### Full — every option
 ```yaml
@@ -198,9 +220,10 @@ syncs:
   - name: sales                                          # a label; you run this sync by name
     source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: sales}
     metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
-    target:   {catalog: bg, type: VIEW}
+    target:   {catalog: bg, schema: sales, type: VIEW}
     comments: true
     annotations: {enabled: true, apply_to_objects: true}
+    metadata_only: true               # default; set false to CREATE the objects from the federated source
     objects: {default: all, exclude: [], overrides: []}
     hooks: {on_change_notebook: ""}
 
@@ -218,8 +241,10 @@ annotation_promotion:                                    # default = registry-on
 | `source.schema` | The Oracle **application schema** that holds the data. | `sales` |
 | `metadata.catalog` | Catalog holding the helper view — normally the same foreign catalog. | `bg-oracle-ro_catalog` |
 | `metadata.schema` | Schema holding the `v_metadata` helper view = the **login's** schema (§1). Omit → defaults to `source.schema`. | `dbx_fed` |
-| `target.catalog` | The Databricks catalog where synced objects (and the control plane) are created. | `bg` |
-| `target.type` | What to build in Databricks — see **Target type** below. | `VIEW` |
+| `target.catalog` | Databricks catalog for this sync. With `target.schema` it defines the schema-level mapping `source.schema` → `target.catalog`.`target.schema`. | `bg` |
+| `target.schema` | Databricks schema the objects map to (each lands at `<lower(name)>` there). Omit → defaults to `source.schema`. | `sales` |
+| `target.type` | *(optional in metadata-only mode — defaults to `VIEW`)* In **create** mode, what to build (see **Target type**). In **metadata-only** mode the real type is auto-detected, so this is just a routing/partition key — set it only if you map one Oracle schema to **several** targets in separate syncs. | *(omit)* |
+| `metadata_only` | **Default `true`** = **don't create anything**; apply comments/tags to **pre-existing** UC objects in place. The engine **auto-detects** each target's real type (table / MV / view) and uses the correct DDL, so **one sync can cover a mix** and view definitions are preserved. Set **`false`** to have the tool **create** the objects from the federated source. | `true` |
 | `comments` | Sync table/column comments. | `true` |
 | `annotations.enabled` | Read annotations into the **registry** (Oracle 23ai+). | `true` |
 | `annotations.apply_to_objects` | Also apply *promoted* annotations as **tags**. `false` = registry only. | `true` |
@@ -248,16 +273,29 @@ opt-in, name by name (tags drive governance/access, so this is deliberate). For 
 Names you don't list still land in the registry — they just don't become tags. (Governed tags can reject
 non-conforming values; those stay registry-only and are reported — see §2d.)
 
-### Renaming objects (optional)
-By default `SALES.CUSTOMERS → bg.sales.customers`. To send specific objects elsewhere, add `objects.overrides`
-— each entry points one object at **any** catalog/schema/name:
+### Mapping a schema to a UC catalog + schema (with optional object-level overrides)
+The **schema-level** mapping is just `source.schema` + `target.catalog` + `target.schema`: every object in the
+Oracle schema maps to `target.catalog`.`target.schema`.`<lower(name)>`.
+```yaml
+syncs:
+  - name: hr                                  # Oracle HR -> main.people  (all existing objects)
+    source:   {connection: bg-oracle-ro, catalog: bg-oracle-ro_catalog, schema: hr}
+    metadata: {catalog: bg-oracle-ro_catalog, schema: dbx_fed}
+    target:   {catalog: main, schema: people}   # metadata-only default; no type needed
+    objects:  {default: all}
+```
+Add **object-level overrides** to send specific objects somewhere else — each points one object at **any**
+catalog/schema/name (overrides win over the schema default):
 ```yaml
     objects:
+      default: all
       overrides:
-        - {oracle_object: FOO, target_catalog: cat_a, target_schema: sch_a, target_object: foo}
+        - {oracle_object: EMPLOYEES, target_catalog: main, target_schema: people, target_object: employee}
+        - {oracle_object: PAYROLL,   target_catalog: secure, target_schema: hr_secure, target_object: payroll}
 ```
-The `setup` job loads these into the mapping table declaratively (re-running reconciles them — remove one from
-the YAML and it's removed). Extra knobs: `name_prefix`, `name_suffix`, `case_mode` (`lower`/`upper`/`preserve`).
+The `setup` job loads both the schema default and the overrides into the mapping table **declaratively** —
+re-running reconciles them (remove one from the YAML and it's removed). Extra knobs on an override:
+`name_prefix`, `name_suffix`, `case_mode` (`lower`/`upper`/`preserve`).
 
 ---
 
@@ -283,14 +321,15 @@ Everything is in the workspace UI — no CLI needed.
 
 ### Option B — Databricks Asset Bundle (DAB) *(optional; repeatable / multi-env / CI-CD)*
 A DAB packages the code + jobs + config so you deploy with one CLI command and promote dev→prod consistently.
-It creates three jobs: **`setup`**, **`sync`** (parameterized `sync_name`/`apply`, schedulable), and **`demo`**.
+It creates four jobs: **`setup`**, **`sync`** (parameterized `sync_name`/`apply`, schedulable), **`pipeline`**
+(one task that does setup+sync from `setup`/`sync_name`/`apply` params — see §5 of GETTING_STARTED.md), and **`demo`**.
 ```
 oracle-uc-metadata-sync/
 ├── databricks.yml          # the bundle: variables, targets (dev/prod), jobs
 ├── README.md / ROADMAP.md
 ├── demo_genie_pipeline.py  # optional: create a Genie space for the §10 integration
 ├── config/sync_config.yaml # the sync config (§3)
-└── src/                    # 00_setup, sync_oracle_metadata, demo_oracle_metadata_sync, hooks/ (§10)
+└── src/                    # 00_setup, sync_oracle_metadata, run_pipeline, demo_oracle_metadata_sync, hooks/ (§10)
 ```
 ```bash
 databricks auth login --host https://<your-workspace>
@@ -298,9 +337,9 @@ databricks auth login --host https://<your-workspace>
 databricks bundle validate -t dev
 databricks bundle deploy   -t dev                                       # uploads code + creates the 3 jobs
 databricks bundle run setup -t dev
-databricks bundle run sync  -t dev -- --sync_name sales --apply false   # PREVIEW: writes nothing
-databricks bundle run sync  -t dev -- --sync_name sales --apply true    # APPLY
-# when ready: unpause the schedule in the `sync` job (ships PAUSED, apply=false for safety)
+databricks bundle run sync  -t dev --params sync_name=sales,apply=false   # PREVIEW: writes nothing
+databricks bundle run sync  -t dev --params sync_name=sales,apply=true    # APPLY
+# when ready: in the `pipeline` job (the scheduled one) set apply=true and unpause (ships PAUSED, apply=false)
 # promote to prod:  databricks bundle deploy -t prod   (set run_as to a service principal)
 ```
 `databricks bundle destroy -t dev` removes everything the bundle created.
@@ -364,6 +403,7 @@ automatic (the mapping).
 | `config/sync_config.yaml` | The sync config (§3) |
 | `src/00_setup.py` | Idempotent: creates the control plane (tables, resolver, default mapping) + loads the YAML |
 | `src/sync_oracle_metadata.py` | **The sync engine** — run per `sync_name` (dry-run by default) |
+| `src/run_pipeline.py` | **One-notebook runner** — props `setup`/`sync_name`(or `ALL`)/`apply`; orchestrates setup + sync in one task |
 | `src/demo_oracle_metadata_sync.py` | End-to-end demo that uses the engine (version-aware) |
 | `src/hooks/genie_push.py` + `update_genie_space.py` | *(optional)* the Genie integration hook + its SDK — see §10 |
 | `demo_genie_pipeline.py` | *(optional)* create a Genie space over the synced tables — see §10 |

@@ -63,7 +63,7 @@ spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.sync_config (
   metadata_catalog STRING, metadata_schema STRING,
   target_catalog STRING, target_type STRING, sync_comments BOOLEAN, sync_annotations BOOLEAN,
   apply_annotations_to_objects BOOLEAN, object_include ARRAY<STRING>, object_exclude ARRAY<STRING>,
-  on_change_notebook STRING, genie_space_id STRING, enabled BOOLEAN, updated_at TIMESTAMP
+  on_change_notebook STRING, genie_space_id STRING, metadata_only BOOLEAN, enabled BOOLEAN, updated_at TIMESTAMP
 ) COMMENT 'One row per sync job; loaded from sync_config.yaml. source_*=data (federated app schema); metadata_*=where the v_metadata helper view lives.'""")
 
 spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.annotation_promotion_policy (
@@ -97,21 +97,9 @@ print("control-plane DDL ensured")
 
 # COMMAND ----------
 
-# MAGIC %md ## 2. Default object mapping (SALES -> bg.sales / bg.sales_mv). Idempotent seed.
-
-# COMMAND ----------
-
-for tt, tgt in [("VIEW", "sales"), ("MATERIALIZED_VIEW", "sales_mv"), ("TABLE", "sales_tbl")]:
-    spark.sql(f"""MERGE INTO {MS}.oracle_to_uc_mapping t
-      USING (SELECT 'SALES' oracle_schema, CAST(NULL AS STRING) oracle_object, '{tt}' target_type) s
-      ON upper(t.oracle_schema)=s.oracle_schema AND t.oracle_object IS NULL
-         AND upper(coalesce(t.target_type,'VIEW'))=s.target_type
-      WHEN NOT MATCHED THEN INSERT (oracle_schema, oracle_object, target_catalog, target_schema,
-           case_mode, target_type, notes, updated_at)
-        VALUES ('SALES', NULL, 'bg', '{tgt}', 'lower', '{tt}',
-           'schema default SALES.* -> bg.{tgt}.<lower(name)>', current_timestamp())""")
-print("mapping defaults ensured")
-display(spark.sql(f"SELECT oracle_schema, target_catalog, target_schema, target_type FROM {MS}.oracle_to_uc_mapping ORDER BY target_type"))
+# MAGIC %md ## 2. (Schema-default object mapping is built from the YAML in section 3 — config-driven.)
+# MAGIC Each sync maps its Oracle `source.schema` → `target.catalog`.`target.schema` (per `target.type`);
+# MAGIC objects land at `<lower(name)>` there. Per-object `objects.overrides` take precedence.
 
 # COMMAND ----------
 
@@ -126,17 +114,38 @@ from pyspark.sql.types import (StructType, StructField, StringType, BooleanType,
 with open(YAML_PATH) as f:
     cfg = yaml.safe_load(f)
 
+# Schema-default mappings (config-driven): each sync's Oracle source_schema -> target.catalog.target.schema
+# for its target_type; objects land at <lower(name)>. target.schema defaults to the source schema name.
+# Per-object overrides (loaded further below) take precedence. Declarative: edit YAML + re-run setup to update.
+_seeded = set()
+for s in cfg.get("syncs", []):
+    osch = (s.get("source", {}).get("schema") or "").upper()
+    tg = s.get("target", {}) or {}
+    tcat = tg.get("catalog"); tsch = (tg.get("schema") or s.get("source", {}).get("schema") or "").lower()
+    ttype = (tg.get("type") or "VIEW").upper()
+    if not (osch and tcat and tsch) or (osch, ttype) in _seeded:
+        continue
+    _seeded.add((osch, ttype))
+    spark.sql(f"""MERGE INTO {MS}.oracle_to_uc_mapping t
+      USING (SELECT '{osch}' oracle_schema, CAST(NULL AS STRING) oracle_object, '{ttype}' target_type) s
+      ON upper(t.oracle_schema)=s.oracle_schema AND t.oracle_object IS NULL
+         AND upper(coalesce(t.target_type,'VIEW'))=s.target_type
+      WHEN MATCHED THEN UPDATE SET target_catalog='{tcat}', target_schema='{tsch}', case_mode='lower', updated_at=current_timestamp()
+      WHEN NOT MATCHED THEN INSERT (oracle_schema, oracle_object, target_catalog, target_schema, case_mode, target_type, notes, updated_at)
+        VALUES ('{osch}', NULL, '{tcat}', '{tsch}', 'lower', '{ttype}', 'schema default {osch}.* -> {tcat}.{tsch}', current_timestamp())""")
+print(f"schema-default mappings ensured: {sorted(_seeded)}")
+
 sync_rows = []
 for s in cfg.get("syncs", []):
     src, meta, tgt, ann, objs, hooks = (s.get("source", {}), s.get("metadata", {}), s.get("target", {}),
         s.get("annotations", {}), s.get("objects", {}), s.get("hooks", {}))
     sync_rows.append((s["name"], src.get("connection"), src.get("catalog"), src.get("schema"),
         meta.get("catalog") or src.get("catalog"), meta.get("schema") or src.get("schema"),
-        tgt.get("catalog"), tgt.get("type"), bool(s.get("comments", True)),
+        tgt.get("catalog"), (tgt.get("type") or "VIEW"), bool(s.get("comments", True)),   # type optional → VIEW
         bool(ann.get("enabled", False)), bool(ann.get("apply_to_objects", False)),
         list(objs.get("include", []) or []), list(objs.get("exclude", []) or []),
         hooks.get("on_change_notebook", "") or "", hooks.get("genie_space_id", "") or "",
-        bool(s.get("enabled", True))))
+        bool(s.get("metadata_only", True)), bool(s.get("enabled", True))))   # default: metadata-only (decorate existing)
 
 sync_schema = StructType([
     StructField("name", StringType()), StructField("source_connection", StringType()),
@@ -147,7 +156,7 @@ sync_schema = StructType([
     StructField("apply_annotations_to_objects", BooleanType()),
     StructField("object_include", ArrayType(StringType())), StructField("object_exclude", ArrayType(StringType())),
     StructField("on_change_notebook", StringType()), StructField("genie_space_id", StringType()),
-    StructField("enabled", BooleanType())])
+    StructField("metadata_only", BooleanType()), StructField("enabled", BooleanType())])
 (spark.createDataFrame(sync_rows, sync_schema).withColumn("updated_at", F.current_timestamp())
    .write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{MS}.sync_config"))
 

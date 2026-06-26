@@ -32,12 +32,17 @@ meta_cat = c.metadata_catalog or c.source_catalog
 meta_sch = c.metadata_schema  or c.source_schema
 src_meta_fqn = f"`{meta_cat}`.{meta_sch}"                          # METADATA: the owner-filtered v_metadata helper view
 owner = c.source_schema.upper()                                   # Oracle owner of the synced objects
-tt = c.target_type.upper()
+# target.type is optional. In metadata_only mode the real type is auto-detected per object; target_type is
+# only a routing/partition key here, so it defaults to VIEW when unset. (In create mode it picks what to build.)
+tt = (c.target_type or "VIEW").upper()
+# Default mode is metadata-only (decorate pre-existing objects). NULL/unset -> metadata_only.
+metadata_only = True if c.metadata_only is None else bool(c.metadata_only)
 resolver = f"{MS}.resolve_uc_name"
 exclude = set(o.upper() for o in (c.object_exclude or []))
 print(f"sync={SYNC} data={c.source_catalog}.{c.source_schema} meta={meta_cat}.{meta_sch} owner={owner} "
       f"target_type={tt} comments={c.sync_comments} annotations={c.sync_annotations} "
-      f"apply_tags={c.apply_annotations_to_objects} mode={'APPLY' if do_apply else 'DRY RUN'} run_id={run_id}")
+      f"apply_tags={c.apply_annotations_to_objects} metadata_only={metadata_only} "
+      f"mode={'APPLY' if do_apply else 'DRY RUN'} run_id={run_id}")
 
 def sql_str(s): return "'" + (s or "").replace("'", "''") + "'"
 def sanitize_key(name):  # UC tag keys: no . , - = / : and no edge spaces
@@ -74,6 +79,28 @@ def get_cols(obj):
 def uc_of(obj):
     return spark.sql(f"SELECT {resolver}('{c.source_schema}','{obj}','{tt}') n").collect()[0].n
 
+# Effective object type for choosing apply DDL. In create mode it's the sync's target_type. In metadata_only
+# mode we AUTO-DETECT the existing object's real type (TABLE / MATERIALIZED_VIEW / VIEW) so one sync can cover
+# a mix and never picks the wrong verb. Bookkeeping (state/registry) still keys on the sync-level target_type.
+_type_cache = {}
+def effective_type(uc):
+    if not metadata_only or not uc:
+        return tt
+    if uc in _type_cache:
+        return _type_cache[uc]
+    et = tt
+    try:
+        cat, sch, tbl = uc.split(".")[-3], uc.split(".")[-2], uc.split(".")[-1]
+        rows = spark.sql(f"SELECT table_type FROM {cat}.information_schema.tables "
+                         f"WHERE table_schema='{sch}' AND table_name='{tbl}'").collect()
+        if rows:
+            raw = (rows[0].table_type or "").upper()
+            et = "VIEW" if raw == "VIEW" else ("MATERIALIZED_VIEW" if raw == "MATERIALIZED_VIEW" else "TABLE")
+    except Exception as e:
+        print(f"  type-detect {uc}: defaulting to {tt} ({str(e).splitlines()[0][:60]})")
+    _type_cache[uc] = et
+    return et
+
 # COMMAND ----------
 
 # MAGIC %md ## 1. Comments leg
@@ -104,29 +131,39 @@ if c.sync_comments:
     changed_c = sorted({h[3] for h in history if h[0] == 'COMMENT'})
     tab_cmt = {k[0]: v for k, v in cur.items() if k[1] is None}
     col_cmt = {(k[0], k[1]): v for k, v in cur.items() if k[1] is not None}
-    # Object creation. Source may be an Oracle TABLE or VIEW — `SELECT * FROM {src}.{obj}` works for both.
-    for obj in changed_c:
-        uc = uc_of(obj); cols = get_cols(obj)
-        if not uc or not cols: continue
-        sel = ", ".join(f"{cc} AS {cc.lower()}" for cc in cols)
-        if tt == 'VIEW':   # zero-copy view; column comments baked into the column list (rebuild)
-            lines = [cc.lower() + (f" COMMENT {sql_str(col_cmt[(obj,cc.upper())])}" if (obj,cc.upper()) in col_cmt else "") for cc in cols]
-            cc_clause = f"\nCOMMENT {sql_str(tab_cmt[obj])}" if obj in tab_cmt else ""
-            stmts.append((f"REPLACE VIEW {uc}", f"CREATE OR REPLACE VIEW {uc} (\n  " + ",\n  ".join(lines) + f"\n){cc_clause}\nAS SELECT * FROM {src_data_fqn}.{obj}"))
-            rebuilt_objects.add(uc)
-        elif tt == 'MATERIALIZED_VIEW':   # refreshable materialized copy
-            stmts.append((f"ensure MV {uc}", f"CREATE MATERIALIZED VIEW IF NOT EXISTS {uc} AS SELECT {sel} FROM {src_data_fqn}.{obj}"))
-        else:   # TABLE: static CTAS snapshot (created once; data not auto-refreshed)
-            stmts.append((f"ensure TABLE {uc}", f"CREATE TABLE IF NOT EXISTS {uc} AS SELECT {sel} FROM {src_data_fqn}.{obj}"))
-    if tt != 'VIEW':   # MV and TABLE apply comments in place (no rebuild)
-        col_verb = "MATERIALIZED VIEW" if tt == 'MATERIALIZED_VIEW' else "TABLE"
+    # Object creation — SKIPPED in metadata_only mode (objects already exist; we only decorate them).
+    if not metadata_only:
+        # Source may be an Oracle TABLE or VIEW — `SELECT * FROM {src}.{obj}` works for both.
+        for obj in changed_c:
+            uc = uc_of(obj); cols = get_cols(obj)
+            if not uc or not cols: continue
+            sel = ", ".join(f"{cc} AS {cc.lower()}" for cc in cols)
+            if tt == 'VIEW':   # zero-copy view; column comments baked into the column list (rebuild)
+                lines = [cc.lower() + (f" COMMENT {sql_str(col_cmt[(obj,cc.upper())])}" if (obj,cc.upper()) in col_cmt else "") for cc in cols]
+                cc_clause = f"\nCOMMENT {sql_str(tab_cmt[obj])}" if obj in tab_cmt else ""
+                stmts.append((f"REPLACE VIEW {uc}", f"CREATE OR REPLACE VIEW {uc} (\n  " + ",\n  ".join(lines) + f"\n){cc_clause}\nAS SELECT * FROM {src_data_fqn}.{obj}"))
+                rebuilt_objects.add(uc)
+            elif tt == 'MATERIALIZED_VIEW':   # refreshable materialized copy
+                stmts.append((f"ensure MV {uc}", f"CREATE MATERIALIZED VIEW IF NOT EXISTS {uc} AS SELECT {sel} FROM {src_data_fqn}.{obj}"))
+            else:   # TABLE: static CTAS snapshot (created once; data not auto-refreshed)
+                stmts.append((f"ensure TABLE {uc}", f"CREATE TABLE IF NOT EXISTS {uc} AS SELECT {sel} FROM {src_data_fqn}.{obj}"))
+    # Comments applied IN PLACE: MV/TABLE always; in metadata_only, ALL types incl VIEW (never rebuilt).
+    if tt != 'VIEW' or metadata_only:
         for h in [x for x in history if x[0] == 'COMMENT']:
             _, _, _, obj, col, lvl, _, ch, _, newc = h; uc = uc_of(obj)
             if not uc: continue
+            if metadata_only and not spark.catalog.tableExists(uc):
+                print(f"  metadata_only: target {uc} not found — skipped"); continue
+            et = effective_type(uc)   # detected real type in metadata_only; sync target_type otherwise
             txt = "" if ch == 'REMOVED' else (newc or "")
-            if lvl == 'TABLE': stmts.append((f"comment {uc}", f"COMMENT ON TABLE {uc} IS {sql_str(txt)}"))
-            else: stmts.append((f"comment {uc}.{col.lower()}", f"ALTER {col_verb} {uc} ALTER COLUMN {col.lower()} COMMENT {sql_str(txt)}"))
-    print(f"comments: {Counter(h[7] for h in history if h[0]=='COMMENT')}")
+            if lvl == 'TABLE':
+                stmts.append((f"comment {uc}", f"COMMENT ON {'VIEW' if et=='VIEW' else 'TABLE'} {uc} IS {sql_str(txt)}"))
+            elif et == 'VIEW':   # view columns decorate in place — no rebuild, original DDL preserved
+                stmts.append((f"comment {uc}.{col.lower()}", f"COMMENT ON COLUMN {uc}.{col.lower()} IS {sql_str(txt)}"))
+            else:
+                col_verb = "MATERIALIZED VIEW" if et == 'MATERIALIZED_VIEW' else "TABLE"
+                stmts.append((f"comment {uc}.{col.lower()}", f"ALTER {col_verb} {uc} ALTER COLUMN {col.lower()} COMMENT {sql_str(txt)}"))
+    print(f"comments: {Counter(h[7] for h in history if h[0]=='COMMENT')}" + (" [metadata_only]" if metadata_only else ""))
 else:
     print("comments leg disabled")
 
@@ -211,10 +248,11 @@ else:
 # COMMAND ----------
 
 def tag_sql(op, uc, col2, tag_key, value):
+    et = effective_type(uc)   # detected real type in metadata_only; sync target_type otherwise
     if col2 is None:
-        verb = {'MATERIALIZED_VIEW': 'MATERIALIZED VIEW', 'TABLE': 'TABLE'}.get(tt, 'VIEW')
+        verb = {'MATERIALIZED_VIEW': 'MATERIALIZED VIEW', 'TABLE': 'TABLE'}.get(et, 'VIEW')
         target = f"ALTER {verb} {uc}"
-    elif tt == 'MATERIALIZED_VIEW':
+    elif et == 'MATERIALIZED_VIEW':
         target = f"ALTER MATERIALIZED VIEW {uc} ALTER COLUMN {col2.lower()}"
     else:   # TABLE and VIEW both use ALTER TABLE ... ALTER COLUMN for column tags
         target = f"ALTER TABLE {uc} ALTER COLUMN {col2.lower()}"
@@ -297,7 +335,7 @@ summary = {"run_id": run_id, "sync": SYNC, "target_type": tt, "applied": do_appl
            "tags_blocked": [b[0] for b in tag_blocked],
            "comment_failures": [f[0] for f in comment_failed],
            "registry_active": sum(1 for r in registry_rows if r[9]) if c.sync_annotations else 0,
-           "registry_changed": registry_changed,
+           "registry_changed": registry_changed, "metadata_only": metadata_only,
            "affected_objects": sorted({h[3] for h in history} | {o[4] for o in tag_ops})}
 if do_apply and (history or tag_history or registry_changed) and (c.on_change_notebook or "").strip():
     try:

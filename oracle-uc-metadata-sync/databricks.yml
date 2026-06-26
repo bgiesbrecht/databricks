@@ -50,8 +50,8 @@ resources:
               yaml_path: ${workspace.file_path}/config/sync_config.yaml
               metadata_schema: ${var.metadata_schema}
 
-    # The metadata sync. Parameterized (sync_name, apply) and schedulable.
-    # Defaults are SAFE: apply=false (dry run). Set apply=true (and unpause) to write.
+    # The metadata sync — run one sync by name (ad-hoc/manual). The SCHEDULED task is `pipeline` (below).
+    # Defaults are SAFE: apply=false (dry run). Set apply=true to write.
     sync:
       name: "[${bundle.target}] oracle-uc-sync :: sync"
       parameters:
@@ -59,14 +59,6 @@ resources:
           default: sales
         - name: apply
           default: "false"
-      schedule:
-        quartz_cron_expression: "0 0 6 * * ?"   # 06:00 UTC daily
-        timezone_id: UTC
-        pause_status: PAUSED                      # customer unpauses when ready
-      # Add failure alerts by uncommenting and setting an address (blank breaks deploy):
-      # email_notifications:
-      #   on_failure:
-      #     - you@example.com
       tasks:
         - task_key: sync
           notebook_task:
@@ -74,6 +66,37 @@ resources:
             base_parameters:
               sync_name: "{{job.parameters.sync_name}}"
               apply: "{{job.parameters.apply}}"
+              metadata_schema: ${var.metadata_schema}
+
+    # One-task runner AND the scheduled job: optionally (re)load config, then run one or ALL syncs.
+    # Ships with a PAUSED daily schedule + SAFE defaults (apply=false). To go live: set the `apply`
+    # parameter to true and unpause the schedule.
+    pipeline:
+      name: "[${bundle.target}] oracle-uc-sync :: pipeline"
+      parameters:
+        - name: setup
+          default: "false"          # set true after editing the config to reload it
+        - name: sync_name
+          default: "ALL"            # a sync name, or ALL for every enabled sync
+        - name: apply
+          default: "false"          # false = preview; set true (and unpause) to apply on schedule
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"   # 06:00 UTC daily
+        timezone_id: UTC
+        pause_status: PAUSED                      # unpause when ready
+      # Add failure alerts by uncommenting and setting an address (blank breaks deploy):
+      # email_notifications:
+      #   on_failure:
+      #     - you@example.com
+      tasks:
+        - task_key: pipeline
+          notebook_task:
+            notebook_path: src/run_pipeline.py
+            base_parameters:
+              setup: "{{job.parameters.setup}}"
+              sync_name: "{{job.parameters.sync_name}}"
+              apply: "{{job.parameters.apply}}"
+              yaml_path: ${workspace.file_path}/config/sync_config.yaml
               metadata_schema: ${var.metadata_schema}
 
     # Optional end-to-end demo (changes an Oracle comment/annotation via JDBC, then syncs).
