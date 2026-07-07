@@ -1,0 +1,31 @@
+command:
+  - "python"
+  - "-m"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # --- Read path: foreign catalog via serverless SQL warehouse ---
+  - name: DATABRICKS_WAREHOUSE_ID
+    value: ""
+  - name: FOREIGN_CATALOG
+    value: ""
+  - name: FOREIGN_SCHEMA
+    value: "public"
+  # --- Write path: direct psycopg connection to RDS Postgres ---
+  - name: PGHOST
+    value: ""
+  - name: PGPORT
+    value: "5432"
+  - name: PGDATABASE
+    value: ""
+  - name: PGUSER
+    value: ""
+  - name: PGSSLMODE
+    value: "require"
+  - name: PGPASSWORD
+    valueFrom: ""
