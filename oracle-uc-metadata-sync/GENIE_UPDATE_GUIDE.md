@@ -1,5 +1,13 @@
 # Applying annotations (and other metadata) to a Genie space
 
+> **Looking for the LLNL annotation → Genie pipeline that this repo ships?** See
+> **[ANNOTATION_PARSING.md](ANNOTATION_PARSING.md)**. LLNL annotations use a **JSON value format**
+> (`foreign_key`, `sql_expression_*`, `sample_query_*`) parsed by `src/annotation_parser.py` and rendered
+> by `src/annotation_to_genie.py`, then pushed by the `genie_push` hook — you do **not** hand-roll the
+> routing/parsing shown below. This guide remains the reference for the underlying **SDK** and the general
+> pattern (useful for ad-hoc pushes or new annotation shapes). The `RELATED_TO` string convention below is a
+> generic illustration and predates the JSON format.
+
 A how-to for an engineer who wants to push metadata into a Genie space **directly with the
 `update_genie_space.py` SDK** — without our sync notebooks. The shape is always the same:
 

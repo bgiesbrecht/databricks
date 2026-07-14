@@ -53,7 +53,7 @@ There are **two ways** it can put metadata into Databricks:
 
 ### Comments vs. annotations vs. tags (key concepts)
 - **Comment** — free-text description on a table/column (Oracle `COMMENT ON`). Synced onto the UC object; Genie reads it automatically.
-- **Annotation** (Oracle 23ai+) — a *named* governance label (e.g. `PII`, `Classification`, or your own like `RELATED_TO`). **Everything** is captured into the **registry** table; a curated subset you choose is promoted to **UC tags**.
+- **Annotation** (Oracle 23ai+) — a *named* label (e.g. `PII`, `Classification`, or Genie-feeding ones like `foreign_key` / `sql_expression_*` / `sample_query_*`). **Everything** is captured into the **registry** table; a curated subset you choose is promoted to **UC tags**, and the Genie-feeding ones drive the `genie_push` hook.
 - **UC tag** — Databricks' key-value governance label (drives search, policies, Genie). This is where promoted annotations land.
 
 ### Files in the repo
@@ -64,7 +64,7 @@ There are **two ways** it can put metadata into Databricks:
 | `config/sync_config.yaml` | Your configuration — the `syncs` and the `annotation_promotion` policy. | ✅ **Required** |
 | `src/run_pipeline.py` | One-notebook runner (props: `setup` / `sync_name`=name or `ALL` / `apply`) that orchestrates `00_setup` + the engine in a single task. | ⭐ Optional (convenience / scheduled job) |
 | `databricks.yml` | Databricks Asset Bundle definition (jobs + targets). | Optional — only for the **bundle** run path (§5 Option B); not needed to run from the workspace. |
-| `src/hooks/genie_push.py` | Post-sync hook that pushes joins (from `RELATED_TO`) into a Genie space. | Optional — only if you use the **Genie** integration (§ see README §10). |
+| `src/hooks/genie_push.py` | Post-sync hook that pushes joins/filters/measures/examples (from JSON annotations) into a Genie space. | Optional — only if you use the **Genie** integration (§ see README §10, ANNOTATION_PARSING.md). |
 | `src/hooks/update_genie_space.py` | The Genie-space SDK the hook calls. | Optional — Genie only (sits beside the hook). |
 | `demo_genie_pipeline.py` | One-shot script to create a Genie space over your synced tables. | Optional — Genie only. |
 | `src/demo_oracle_metadata_sync.py` | End-to-end **demo**: edits a comment/annotation in Oracle, then syncs (needs writeable Oracle creds). | Optional — demo only. |
@@ -377,10 +377,13 @@ syncs:
     objects: {default: all}
     hooks: {on_change_notebook: "hooks/genie_push", genie_space_id: "<your space id>"}
 ```
-Comments reach Genie automatically; **joins** come from a `RELATED_TO` annotation on the FK column in Oracle:
+Comments reach Genie automatically; **joins** (and filters/measures/examples) come from JSON annotations —
+a `foreign_key` annotation on the FK column carries both sides (see [ANNOTATION_PARSING.md](ANNOTATION_PARSING.md)):
 ```sql
-ALTER TABLE orders MODIFY (customer_id
-  ANNOTATIONS (ADD OR REPLACE RELATED_TO 'customers.customer_id;rt=MANY_TO_ONE'));
+ALTER MATERIALIZED VIEW po_edd_mv MODIFY per_intr_no_buy ANNOTATIONS (REPLACE foreign_key '{
+  "left_table": "po_edd_mv", "right_table": "all_users_v1_mv", "join_condition": "=",
+  "left_column": "per_intr_no_buy", "right_column": "per_intr_no",
+  "relationship": "Many to One", "Type": "Join" }');
 ```
 
 ### Config field quick-reference

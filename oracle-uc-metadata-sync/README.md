@@ -406,6 +406,7 @@ automatic (the mapping).
 | `src/run_pipeline.py` | **One-notebook runner** — props `setup`/`sync_name`(or `ALL`)/`apply`; orchestrates setup + sync in one task |
 | `src/demo_oracle_metadata_sync.py` | End-to-end demo that uses the engine (version-aware) |
 | `src/hooks/genie_push.py` + `update_genie_space.py` | *(optional)* the Genie integration hook + its SDK — see §10 |
+| `src/annotation_parser.py` + `src/annotation_to_genie.py` | *(optional)* annotation JSON → Genie config pipeline used by the hook — see [ANNOTATION_PARSING.md](ANNOTATION_PARSING.md) |
 | `demo_genie_pipeline.py` | *(optional)* create a Genie space over the synced tables — see §10 |
 
 **Control plane** — tables/views created in `bg.metadata_syn`:
@@ -471,31 +472,37 @@ Oracle changes. Two halves:
 - **Comments → automatic.** The sync already writes table/column comments onto the UC objects, and Genie reads
   UC comments directly — nothing extra to push. (`CREATE OR REPLACE VIEW` is Genie-safe: same UC name keeps
   the room's table attached.)
-- **Joins/instructions → explicit, from annotations.** Oracle annotations carry the join criteria. The hook
-  reads them from the registry and writes the room's join definitions via the Genie API.
+- **Joins / expressions / filters / examples / instructions → explicit, from annotations.** Oracle annotations
+  carry these as **JSON values**. The hook reads them from the registry, parses them, and writes the
+  corresponding Genie sections via the Genie API.
 
-### `RELATED_TO` annotation convention
-Put a **column-level** annotation named `RELATED_TO` on the foreign-key column. The annotated table/column is
-the **left** side; the value names the **right** side:
-```
-RELATED_TO = '<right_table>.<right_col>[;rt=<MANY_TO_ONE|ONE_TO_MANY|ONE_TO_ONE|MANY_TO_MANY>]'
-```
-Example — on `ORDERS.CUSTOMER_ID` (Oracle 23ai+):
+### Annotation format (JSON)
+Each annotation's value is a JSON object; the `annotation_name` **prefix** selects the kind. Full spec,
+examples, and the parse→produce mapping are in **[ANNOTATION_PARSING.md](ANNOTATION_PARSING.md)**. In short:
+
+| `annotation_name` | Level | → Genie section |
+|---|---|---|
+| `foreign_key` | column | **join** relationship (uses the JSON's `relationship` + `join_condition`) |
+| `sql_expression_<label>` | table | **filter** (`Type: "Filter"`) or **expression/measure** (other types) |
+| `sample_query_<label>` | table | **example** query (Oracle schema prefix rewritten to the UC name) |
+| `AI_GUIDANCE` table comment | table | system **instructions** (via the comments leg) |
+
+Example — a foreign key on `PO_EDD_MV.PER_INTR_NO_BUY` (Oracle 26ai):
 ```sql
-ALTER TABLE orders MODIFY (customer_id
-  ANNOTATIONS (ADD OR REPLACE RELATED_TO 'customers.customer_id;rt=MANY_TO_ONE'));
+ALTER MATERIALIZED VIEW po_edd_mv MODIFY per_intr_no_buy ANNOTATIONS (REPLACE foreign_key '{
+  "left_table": "po_edd_mv", "right_table": "all_users_v1_mv", "join_condition": "=",
+  "left_column": "per_intr_no_buy", "right_column": "per_intr_no",
+  "relationship": "Many to One", "Type": "Join" }');
 ```
-The hook resolves both sides to their UC names (via `resolve_uc_name`) and emits a join
-`ON orders.customer_id = customers.customer_id`. Relationship defaults to `MANY_TO_ONE`. `RELATED_TO` is a
-**neutral** relationship annotation — Oracle code can read it for its own purposes too; it isn't Genie-specific.
-Governance annotations (`PII`, `Classification`, …) are untouched by the hook and keep flowing to the
-registry/tags as usual.
+The hook resolves both sides to their UC names (via `resolve_uc_name`, honoring per-object overrides) and emits
+the join. Role-playing dimensions (the same table joined twice) get distinct aliases automatically. Governance
+annotations (`PII`, `Classification`, …) are untouched by the hook and keep flowing to the registry/tags.
 
 ### Wiring
 *Prerequisite: run a sync first (§4) so the target tables (e.g. `bg.sales.*`) exist — the room is created over them.*
 1. **Create the room** over the synced tables and note its `space_id`:
    ```bash
-   python3 demo_genie_pipeline.py --warehouse-id <id>      # seeds vocab + sample questions, no joins yet
+   python3 demo_genie_pipeline.py --warehouse-id <id>      # seeds vocab + sample questions
    ```
 2. **Point the sync at it** — in `config/sync_config.yaml`, on the `sales` sync:
    ```yaml
@@ -503,15 +510,19 @@ registry/tags as usual.
    ```
    Re-run `setup` to load it.
 3. **From now on**, any `apply=true` run that changes something fires `src/hooks/genie_push.py`, which rebuilds
-   the room's joins from `RELATED_TO` annotations (idempotent; replaces only the joins section, leaving
-   human-authored instructions/examples/sample questions intact).
+   the room's joins/filters/expressions/examples from the annotations (idempotent; replaces only the sections it
+   manages, and merges instructions into a sentinel-delimited block so human-authored prose survives).
 
 ### Components
 | Artifact | Role |
 |---|---|
-| `src/hooks/genie_push.py` | The hook — registry `RELATED_TO` → Genie join specs; called via `on_change_notebook` |
+| `src/hooks/genie_push.py` | The hook — registry annotations → Genie config; called via `on_change_notebook` |
+| `src/annotation_parser.py` | Parses annotation JSON values into a typed model (tolerant of invalid JSON) |
+| `src/annotation_to_genie.py` | Renders the typed model into a portable Genie config (+ Oracle→UC SQL rewrite) |
 | `src/hooks/update_genie_space.py` | Vendored Genie-space SDK (`GenieSpaces` client + config helpers) |
+| `tests/test_annotation_pipeline.py` | Unit tests for the parser + renderer (`python -m unittest discover -s tests`) |
 | `demo_genie_pipeline.py` | One-shot: create the room over `bg.sales` with seed config |
 
 > The Genie **Create/Update** APIs are **Beta** (Nov 2025) — treat the request/response shape as subject to
-> change. The hook degrades safely: if a sync has no `genie_space_id`, it no-ops.
+> change. The hook degrades safely: if a sync has no `genie_space_id`, it no-ops; if it has no renderable
+> annotations, it no-ops.

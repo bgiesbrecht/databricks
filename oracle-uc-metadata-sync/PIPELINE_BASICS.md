@@ -7,7 +7,8 @@ When metadata changes in **Oracle**, this pipeline carries it into **Databricks*
 current:
 
 - **Comments** (table/column descriptions) → land on the Databricks objects, and Genie reads them.
-- **Joins** (how tables relate) → pushed into the Genie space so Genie can answer cross-table questions.
+- **Joins, filters, measures, example queries** (from JSON annotations) → pushed into the Genie space so Genie
+  answers cross-table and domain questions.
 
 You change things in **Oracle**; everything downstream follows on the next sync.
 
@@ -17,12 +18,13 @@ You change things in **Oracle**; everything downstream follows on the next sync.
   Oracle (source of truth)                 Databricks
   ┌─────────────────────┐                  ┌────────────────────────────────────────────┐
   │ COMMENT ON …        │   sync job       │ sync_oracle_metadata (engine)              │
-  │ ANNOTATIONS (incl.  │ ───────────────► │   • comments  → bg.<schema>.* objects      │
-  │   RELATED_TO)       │                  │   • annotations → registry table           │
-  └─────────────────────┘                  │        │ (fires only if something changed) │
-                                           │        ▼                                   │
-                                           │   genie_push (hook) → Genie space          │
-                                           │      • joins (from RELATED_TO)             │
+  │ ANNOTATIONS (JSON:  │ ───────────────► │   • comments  → bg.<schema>.* objects      │
+  │   foreign_key,      │                  │   • annotations → registry table           │
+  │   sql_expression_*, │                  │        │ (fires only if something changed) │
+  │   sample_query_*)   │                  │        ▼                                   │
+  └─────────────────────┘                  │   genie_push (hook) → Genie space          │
+                                           │      • joins / filters / expressions /     │
+                                           │        examples (from JSON annotations)    │
                                            └────────────────────────────────────────────┘
 ```
 
@@ -37,19 +39,22 @@ You change things in **Oracle**; everything downstream follows on the next sync.
 ## The two propagation paths
 - **Comments → Genie: automatic, nothing to configure.** The sync writes comments onto the Databricks
   views/tables; Genie reads Unity Catalog comments directly.
-- **Joins → Genie: you author one annotation.** On the **foreign-key column** in Oracle, add a `RELATED_TO`
-  annotation naming the table/column it points to. The hook turns each one into a Genie join.
+- **Joins / filters / measures / examples → Genie: from JSON annotations.** You author annotations whose
+  value is a JSON object; the hook parses them and writes the matching Genie sections. The
+  `annotation_name` prefix picks the kind. Full spec + examples: **[ANNOTATION_PARSING.md](ANNOTATION_PARSING.md)**.
 
-### The one thing you author: `RELATED_TO`
-On the FK column (Oracle 23ai+):
+### What you author: JSON annotations
+On the FK column, a `foreign_key` annotation (Oracle 26ai) — the value is JSON naming both sides:
 ```sql
-ALTER TABLE orders MODIFY (customer_id
-  ANNOTATIONS (ADD OR REPLACE RELATED_TO 'customers.customer_id;rt=MANY_TO_ONE'));
+ALTER MATERIALIZED VIEW po_edd_mv MODIFY per_intr_no_buy ANNOTATIONS (REPLACE foreign_key '{
+  "left_table": "po_edd_mv", "right_table": "all_users_v1_mv", "join_condition": "=",
+  "left_column": "per_intr_no_buy", "right_column": "per_intr_no",
+  "relationship": "Many to One", "Type": "Join" }');
 ```
-- The annotated column is the **left** side; the value `customers.customer_id` is the **right** side.
-- `rt=` is the relationship (default `MANY_TO_ONE`; also `ONE_TO_MANY`, `ONE_TO_ONE`, `MANY_TO_MANY`).
-- `RELATED_TO` is a plain relationship annotation — your own Oracle code can read it too. It is **not**
-  Genie-specific, and it does not collide with governance annotations (`PII`, `Classification`, …).
+- `foreign_key` → a Genie **join** (relationship + condition come from the JSON; role-playing dims aliased).
+- `sql_expression_<label>` → a **filter** (`Type: "Filter"`) or **measure/expression** (other types).
+- `sample_query_<label>` → an **example** query.
+- Governance annotations (`PII`, `Classification`, …) are untouched by the hook and flow to the registry/tags.
 
 ## How to run it
 1. **Point a sync at a Genie space** — in `config/sync_config.yaml`, on your sync:
@@ -66,8 +71,8 @@ ALTER TABLE orders MODIFY (customer_id
 ## Good to know
 - The hook fires **only on an `apply=true` run that actually changed** a comment, tag, or annotation. No
   change → no Genie call. Dry runs never touch Genie.
-- The hook **replaces only the joins** in the room. Human-authored instructions, examples, and sample
-  questions are left untouched.
+- The hook **replaces only the sections it manages** (joins, filters, expressions, examples) and merges
+  instructions into a managed block. Other human-authored content in the room is left untouched.
 - If the hook fails, the **sync still succeeds** — the failure is reported in the run summary, not fatal.
 - A sync with `genie_space_id` blank runs normally and just **skips** the Genie step.
 
@@ -75,5 +80,5 @@ ALTER TABLE orders MODIFY (customer_id
 | Symptom | Check |
 |---|---|
 | Genie didn't update | Was it an `apply=true` run? Did anything actually change? Is `genie_space_id` set (and `setup` re-run after editing the YAML)? |
-| A join didn't appear | Is there a `RELATED_TO` annotation on the FK column, value `table.column`? Did that table get synced? |
+| A join didn't appear | Is there a `foreign_key` JSON annotation on the FK column with valid `right_table`/`right_column`? Did that table get synced? Check the hook summary for `skipped`. |
 | A comment didn't appear | Did the sync run for that schema? Comments only update on `apply=true`. |

@@ -36,3 +36,8 @@ annotation_promotion:
   - {name: Data_Domain,    route: TAG, scope: TABLE}
   - {name: Owner_Team,     route: TAG, scope: TABLE}
   - {name: Geo,            route: TAG, scope: COLUMN}
+
+# Genie integration (optional): no mapping table to author. The genie_push hook derives the Genie section
+# from each annotation's name prefix + the JSON value's Type — foreign_key -> join, sql_expression_* -> filter
+# or expression, sample_query_* -> example. Enable it per-sync via the `hooks.genie_space_id` field above.
+# Full spec + examples: see ANNOTATION_PARSING.md.

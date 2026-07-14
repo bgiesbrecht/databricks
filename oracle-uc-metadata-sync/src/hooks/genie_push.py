@@ -1,24 +1,19 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Post-sync hook: push Oracle-derived config into a Genie space
-# MAGIC Fired by the sync engine (`on_change_notebook`) after a run that changed something. It is handed
-# MAGIC `run_id` + `sync_name`, looks up the sync's `genie_space_id`, and reconstructs the room's **joins**
-# MAGIC from `RELATED_TO` annotations in the registry (`bg.metadata_syn.oracle_annotations`).
+# MAGIC Fired by the sync engine (`on_change_notebook`) after a run that changed something. It reads the
+# MAGIC **annotation registry**, parses each annotation's JSON value with the shared pipeline
+# MAGIC (`annotation_parser` → `annotation_to_genie`), and applies the result to the Genie space.
 # MAGIC
-# MAGIC **Two halves of "update the room":**
-# MAGIC - **Comments (automatic):** the sync already wrote table/column comments onto the UC objects, and Genie
-# MAGIC   reads UC comments directly — nothing to push here. We just log it.
-# MAGIC - **Joins (explicit):** Oracle annotations carry the join criteria. We parse them and `apply_config`
-# MAGIC   the `joins` section (idempotent full-replace of that section; text/examples/sample_questions untouched).
+# MAGIC **What maps where** (see ANNOTATION_PARSING.md for the full spec):
+# MAGIC - `foreign_key` → Genie **joins** (relationship + join_condition from the JSON; role-playing dims aliased)
+# MAGIC - `sql_expression_*` (Type=Filter) → **sql_filters**; other types → **sql_expressions**
+# MAGIC - `sample_query_*` → **examples** (Oracle schema prefix rewritten to the UC name)
+# MAGIC - `AI_GUIDANCE` / DESCRIPTION → **text_instruction** (merged into a managed block, human prose preserved)
 # MAGIC
-# MAGIC ### RELATED_TO annotation convention
-# MAGIC Put a **column-level** annotation named `RELATED_TO` on the foreign-key column. Value:
-# MAGIC ```
-# MAGIC <right_table>.<right_col>[;rt=<MANY_TO_ONE|ONE_TO_MANY|ONE_TO_ONE|MANY_TO_MANY>]
-# MAGIC ```
-# MAGIC The annotated table/column is the **left** side; the value names the **right** side. Default
-# MAGIC relationship is `MANY_TO_ONE`. Example on `ORDERS.CUSTOMER_ID`: `customers.customer_id;rt=MANY_TO_ONE`.
-# MAGIC `RELATED_TO` is a neutral relationship annotation — Oracle code can use it too; it is not Genie-specific.
+# MAGIC **Comments** are NOT pushed here — the sync already wrote them onto the UC objects and Genie reads UC
+# MAGIC comments directly. Only sections we produced content for are touched; everything else in the room is
+# MAGIC left as-authored. Join targets are resolved via `{metadata_schema}.resolve_uc_name` (honors overrides).
 
 # COMMAND ----------
 
@@ -30,10 +25,26 @@ SYNC = dbutils.widgets.get("sync_name")
 MS = dbutils.widgets.get("metadata_schema")
 
 import json
+import os
+import sys
 
-# The vendored SDK (update_genie_space.py) sits beside this notebook; Databricks puts the notebook's own
-# directory on sys.path, so a sibling import works in both bundle and workspace-files deployments.
-from update_genie_space import GenieSpaces
+# The vendored SDK (update_genie_space.py) is a sibling in src/hooks/; the parser + renderer live in
+# src/ (one level up). Databricks puts the notebook's own dir on sys.path — add its parent so the
+# shared pipeline modules import too, in both bundle and workspace-files deployments.
+def _ensure_paths():
+    try:
+        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        nb_dir = os.path.dirname("/Workspace" + ctx.notebookPath().get())   # .../src/hooks
+        for p in (nb_dir, os.path.dirname(nb_dir)):                          # src/hooks, then src
+            if p not in sys.path:
+                sys.path.insert(0, p)
+    except Exception as e:
+        print(f"  path setup note: {str(e).splitlines()[0][:80]}")
+_ensure_paths()
+
+from update_genie_space import GenieSpaces, set_text_instruction
+from annotation_parser import parse_rows
+from annotation_to_genie import render_genie_config
 
 # COMMAND ----------
 
@@ -46,104 +57,95 @@ if not space_id:
     dbutils.notebook.exit(json.dumps({"sync": SYNC, "genie": "skipped (no space id)"}))
 
 src_schema = c.source_schema
-tt = c.target_type.upper()
+tt = (c.target_type or "VIEW").upper()
 resolver = f"{MS}.resolve_uc_name"
 print(f"genie_push sync={SYNC} space_id={space_id} target_type={tt} run_id={RUN_ID}")
 
-def uc_of(obj):
-    return spark.sql(f"SELECT {resolver}('{src_schema}','{obj}','{tt}') n").collect()[0].n
+# Authoritative Oracle-object -> UC-name resolution (honors per-object overrides). Cached; returns
+# None on any failure so the renderer can fall back to its heuristic and report the miss.
+_uc_cache = {}
+def resolve_uc(obj):
+    key = (obj or "").upper()
+    if key not in _uc_cache:
+        try:
+            _uc_cache[key] = spark.sql(f"SELECT {resolver}('{src_schema}','{obj}','{tt}') n").collect()[0].n
+        except Exception:
+            _uc_cache[key] = None
+    return _uc_cache[key]
 
 # COMMAND ----------
 
-# MAGIC %md ## 1. Comments leg — already applied to the UC objects by the sync; Genie reads them directly.
+# MAGIC %md ## 1. Read the active annotations for this sync
 
 # COMMAND ----------
 
-ncmt = spark.sql(f"""
-  SELECT count(*) n FROM {MS}.metadata_state
-  WHERE sync_name='{SYNC}' AND target_type='{tt}' AND kind='COMMENT' AND is_active
-""").collect()[0].n
-print(f"comments live on the UC objects for this sync: {ncmt} (Genie reads UC comments automatically — no push needed)")
-
-# COMMAND ----------
-
-# MAGIC %md ## 2. Joins leg — rebuild join_specs from RELATED_TO annotations.
-
-# COMMAND ----------
-
-REL_PREFIX = "FROM_RELATIONSHIP_TYPE_"
-VALID_REL = {"MANY_TO_ONE", "ONE_TO_MANY", "ONE_TO_ONE", "MANY_TO_MANY"}
-
-def parse_related_to(value):
-    """'customers.customer_id;rt=MANY_TO_ONE' -> (right_table, right_col, RELATIONSHIP)."""
-    parts = [p.strip() for p in (value or "").split(";") if p.strip()]
-    if not parts:
-        return None
-    target = parts[0]
-    rel = "MANY_TO_ONE"
-    for p in parts[1:]:
-        if p.lower().startswith("rt="):
-            cand = p.split("=", 1)[1].strip().upper()
-            if cand in VALID_REL:
-                rel = cand
-    if "." not in target:
-        return None
-    rtbl, rcol = target.rsplit(".", 1)
-    return rtbl.strip(), rcol.strip(), REL_PREFIX + rel
-
-ann = spark.sql(f"""
-  SELECT oracle_object, oracle_column, annotation_value
+rows = spark.sql(f"""
+  SELECT sync_name, oracle_schema, oracle_object, oracle_column, level,
+         object_type, annotation_name, annotation_value, uc_name, is_active
   FROM {MS}.oracle_annotations
   WHERE sync_name='{SYNC}' AND is_active
-    AND upper(annotation_name)='RELATED_TO' AND oracle_column IS NOT NULL
 """).collect()
-
-joins, skipped = [], []
-for r in ann:
-    parsed = parse_related_to(r.annotation_value)
-    if not parsed:
-        skipped.append((r.oracle_object, r.oracle_column, r.annotation_value, "unparseable"))
-        continue
-    rtbl, rcol, rel = parsed
-    left_fqn, right_fqn = uc_of(r.oracle_object), uc_of(rtbl)
-    if not left_fqn or not right_fqn:
-        skipped.append((r.oracle_object, r.oracle_column, r.annotation_value, "object not in mapping"))
-        continue
-    lalias, ralias = r.oracle_object.lower(), rtbl.lower()
-    if lalias == ralias:                       # self-join: disambiguate the right alias
-        ralias = ralias + "_2"
-    lcol, rcol = r.oracle_column.lower(), rcol.lower()
-    joins.append({
-        "left":  {"table": left_fqn,  "alias": lalias},
-        "right": {"table": right_fqn, "alias": ralias},
-        "on":    f"`{lalias}`.`{lcol}` = `{ralias}`.`{rcol}`",
-        "relationship_type": rel,
-        "instruction": f"Join {left_fqn} to {right_fqn} (from Oracle RELATED_TO on {r.oracle_object}.{r.oracle_column}).",
-    })
-
-print(f"derived {len(joins)} join(s) from RELATED_TO annotations:")
-for j in joins:
-    print(f"  {j['on']}  [{j['relationship_type']}]")
-for s in skipped:
-    print(f"  SKIP {s[0]}.{s[1]} = {s[2]!r} ({s[3]})")
+print(f"{len(rows)} active annotation row(s)")
 
 # COMMAND ----------
 
-# MAGIC %md ## 3. Push to the Genie space (idempotent — replaces just the joins section).
+# MAGIC %md ## 2. Parse + render into a portable Genie config
+
+# COMMAND ----------
+
+parsed = parse_rows(rows)
+config, report = render_genie_config(parsed, resolve=resolve_uc)
+print("parse:", parsed.summary())
+print("render:", report.summary())
+for s in report.skipped:  print(f"  SKIP     {s}")
+for w in report.warnings: print(f"  WARN     {w}")
+for r in report.repaired: print(f"  REPAIRED {r}")
+
+# text_instruction is applied via a managed merge-block (below), not apply_config (which replaces).
+text_instruction = config.pop("text_instruction", None)
+
+if not config and not text_instruction:
+    print("nothing to push (no renderable annotations).")
+    dbutils.notebook.exit(json.dumps({"sync": SYNC, "space_id": space_id, "genie": "skipped (empty)",
+                                      "skipped": len(report.skipped), "repaired": len(report.repaired)}))
+
+# COMMAND ----------
+
+# MAGIC %md ## 3. Apply to the Genie space
 
 # COMMAND ----------
 
 ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-host = ctx.apiUrl().get()
-token = ctx.apiToken().get()
-client = GenieSpaces(host, token)
+client = GenieSpaces(ctx.apiUrl().get(), ctx.apiToken().get())
 
-# apply_config replaces only the sections present in the dict; omitted sections (text_instruction,
-# examples, sample_questions) are left exactly as a human authored them.
-client.apply_config(space_id, {"joins": joins})
+# 3a. Section-replace via apply_config — ONLY the sections we produced (others left untouched).
+#     Each section this sync manages is fully owned by it: a re-run replaces it.
+if config:
+    client.apply_config(space_id, config)
+
+# 3b. Instructions MERGED into a sentinel-delimited managed block so human-authored prose survives.
+MARK_B, MARK_E = "<!-- BEGIN oracle-sync -->", "<!-- END oracle-sync -->"
+instr_pushed = 0
+if text_instruction:
+    import re
+    _, inner, etag = client.get(space_id)
+    ti = inner.get("instructions", {}).get("text_instructions", [])
+    cur = ""
+    if ti:
+        content = ti[0].get("content")
+        cur = "".join(content) if isinstance(content, list) else (content or "")
+    human = re.sub(re.escape(MARK_B) + r".*?" + re.escape(MARK_E), "", cur, flags=re.S).strip()
+    block = f"{MARK_B}\n{text_instruction}\n{MARK_E}"
+    set_text_instruction(inner, (human + "\n\n" + block).strip())
+    client.patch(space_id, inner, etag)
+    instr_pushed = 1
+
+# COMMAND ----------
 
 summary = {"run_id": RUN_ID, "sync": SYNC, "space_id": space_id,
-           "joins_pushed": len(joins), "joins_skipped": len(skipped),
-           "comments_live": ncmt}
+           "joins": report.joins, "sql_filters": report.sql_filters,
+           "sql_expressions": report.sql_expressions, "examples": report.examples,
+           "instructions": instr_pushed, "skipped": len(report.skipped),
+           "warnings": len(report.warnings), "repaired": len(report.repaired)}
 print(json.dumps(summary, indent=2))
 dbutils.notebook.exit(json.dumps(summary))

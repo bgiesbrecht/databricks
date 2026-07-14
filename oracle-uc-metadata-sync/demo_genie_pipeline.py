@@ -2,15 +2,15 @@
 demo_genie_pipeline.py — create the Genie room for the Oracle→UC→Genie pipeline.
 
 Creates a Genie space over the synced bg.sales tables, seeded with vocabulary +
-sample questions but **no joins** — the joins are added later by the sync's
-`genie_push` hook from Oracle `RELATED_TO` annotations, so you can see the
+sample questions but **no joins** — joins/filters/measures/examples are added later
+by the sync's `genie_push` hook from Oracle JSON annotations, so you can see the
 before/after.
 
 End-to-end flow:
   1. python3 demo_genie_pipeline.py --warehouse-id <id>      # creates room, prints space_id
   2. paste the space_id into config/sync_config.yaml (sales sync -> hooks.genie_space_id)
   3. run the `setup` job/notebook to reload sync_config
-  4. add a RELATED_TO annotation in Oracle (see README §10) + edit a comment
+  4. add a foreign_key JSON annotation in Oracle (see README §10 / ANNOTATION_PARSING.md) + edit a comment
   5. run the `sync` job/notebook with apply=true  ->  genie_push hook updates the room
 
 Auth: uses DATABRICKS_HOST/DATABRICKS_TOKEN if set, else falls back to the
@@ -98,7 +98,7 @@ def main():
     print(f"\n  space_id: {sid}")
     print(f"  open:     {host.rstrip('/')}/genie/rooms/{sid}")
     print(f"\nNext: set genie_space_id: \"{sid}\" on the `sales` sync in config/sync_config.yaml,")
-    print("then run `setup`, make an Oracle RELATED_TO change, and run `sync` with apply=true.")
+    print("then run `setup`, make an Oracle foreign_key JSON annotation change, and run `sync` with apply=true.")
 
 
 if __name__ == "__main__":

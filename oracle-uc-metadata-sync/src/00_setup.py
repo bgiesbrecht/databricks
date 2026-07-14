@@ -71,6 +71,10 @@ spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.annotation_promotion_policy (
   scope STRING, notes STRING, updated_at TIMESTAMP
 ) COMMENT 'Which Oracle annotations promote beyond the registry. Default route REGISTRY.'""")
 
+# NOTE: the genie_push hook no longer uses a mapping-policy table. Annotation kind is derived from the
+# annotation_name prefix + the JSON value's Type (parsed by src/annotation_parser.py + annotation_to_genie.py;
+# see ANNOTATION_PARSING.md). No genie_annotation_map table is created or read anymore.
+
 spark.sql(f"""CREATE TABLE IF NOT EXISTS {MS}.oracle_annotations (
   sync_name STRING, oracle_schema STRING, oracle_object STRING, oracle_column STRING, level STRING,
   object_type STRING, annotation_name STRING, annotation_value STRING, uc_name STRING, is_active BOOLEAN,
@@ -169,6 +173,9 @@ pol_schema = StructType([StructField("annotation_name", StringType()), StructFie
 (spark.createDataFrame(pol_rows, pol_schema).withColumn("updated_at", F.current_timestamp())
    .write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{MS}.annotation_promotion_policy"))
 
+# (Genie annotation routing is no longer config-driven via a mapping table — the genie_push hook derives it
+# from the annotation_name prefix + the JSON value's Type. See ANNOTATION_PARSING.md.)
+
 # per-object overrides from YAML -> oracle_to_uc_mapping (declarative: replace prior YAML overrides).
 # oracle_schema + target_type are inferred from the sync; you only declare the object + where it goes.
 ov_rows = []
@@ -187,7 +194,7 @@ if ov_rows:
     (spark.createDataFrame(ov_rows, ov_schema).withColumn("updated_at", F.current_timestamp())
         .write.mode("append").saveAsTable(f"{MS}.oracle_to_uc_mapping"))
 
-print(f"loaded {len(sync_rows)} syncs, {len(pol_rows)} promotion rules, {len(ov_rows)} object overrides")
+print(f"loaded {len(sync_rows)} syncs, {len(pol_rows)} promotion rules, {len(gmap_rows)} genie-map rules, {len(ov_rows)} object overrides")
 
 # COMMAND ----------
 
