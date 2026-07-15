@@ -46,9 +46,9 @@ You change things in **Oracle**; everything downstream follows on the next sync.
 ### What you author: JSON annotations
 On the FK column, a `foreign_key` annotation (Oracle 26ai) — the value is JSON naming both sides:
 ```sql
-ALTER MATERIALIZED VIEW po_edd_mv MODIFY per_intr_no_buy ANNOTATIONS (REPLACE foreign_key '{
-  "left_table": "po_edd_mv", "right_table": "all_users_v1_mv", "join_condition": "=",
-  "left_column": "per_intr_no_buy", "right_column": "per_intr_no",
+ALTER MATERIALIZED VIEW orders MODIFY buyer_id ANNOTATIONS (REPLACE foreign_key '{
+  "left_table": "orders", "right_table": "customers", "join_condition": "=",
+  "left_column": "buyer_id", "right_column": "customer_id",
   "relationship": "Many to One", "Type": "Join" }');
 ```
 - `foreign_key` → a Genie **join** (relationship + condition come from the JSON; role-playing dims aliased).

@@ -17,7 +17,7 @@ parser → renderer → Genie space**.
 
 ## 1. Background: where annotations come from
 
-LLNL authors annotations directly on Oracle 26ai objects to drive Oracle's native Select AI.
+Annotations are authored directly on Oracle 26ai objects to drive Oracle's native Select AI.
 The metadata sync captures every annotation into the `oracle_annotations` registry table
 (see `00_setup.py`). Each registry row is one annotation:
 
@@ -26,7 +26,7 @@ The metadata sync captures every annotation into the `oracle_annotations` regist
 | `oracle_schema`, `oracle_object`, `oracle_column` | what the annotation is on |
 | `level` | `TABLE` or `COLUMN` |
 | `annotation_name` | selects the annotation *type* by prefix (see below) |
-| `annotation_value` | a **JSON object** (LLNL 2026-07 format) |
+| `annotation_value` | a **JSON object** (2026-07 format) |
 | `uc_name` | the resolved Unity Catalog name of the annotated object |
 | `is_active` | inactive rows are skipped |
 
@@ -63,11 +63,11 @@ Notes the parser defends against:
 **Oracle annotation (column-level), JSON value:**
 ```json
 {
-  "left_table": "po_edd_mv",
-  "right_table": "all_users_v1_mv",
+  "left_table": "orders",
+  "right_table": "customers",
   "join_condition": "=",
-  "left_column": "per_intr_no_buy",
-  "right_column": "per_intr_no",
+  "left_column": "buyer_id",
+  "right_column": "customer_id",
   "relationship": "Many to One",
   "Instructions": "",
   "Type": "Join"
@@ -79,17 +79,17 @@ Notes the parser defends against:
 **Produces** a Genie join spec:
 ```json
 {
-  "left":  { "table": "llnl_livit_catalog_genie_lab_623_poc.oracle_26ai_test4.po_edd_mv", "alias": "po_edd_mv" },
-  "right": { "table": "llnl_livit_catalog_genie_lab_623_poc.oracle_26ai_test4.all_users_v1_mv", "alias": "all_users_v1_mv" },
-  "on": "`po_edd_mv`.`per_intr_no_buy` = `all_users_v1_mv`.`per_intr_no`",
+  "left":  { "table": "bg.sales.orders", "alias": "orders" },
+  "right": { "table": "bg.sales.customers", "alias": "customers" },
+  "on": "`orders`.`buyer_id` = `customers`.`customer_id`",
   "relationship_type": "FROM_RELATIONSHIP_TYPE_MANY_TO_ONE",
-  "instruction": "Foreign key from Oracle annotation on LINCSVECTR.PO_EDD_MV.per_intr_no_buy."
+  "instruction": "Foreign key from Oracle annotation on SALES.ORDERS.buyer_id."
 }
 ```
 
 **Role-playing dimensions** are handled: if a table is joined more than once (e.g.
-`per_intr_no_buy` *and* `per_intr_no_rqst_by` both reference `all_users_v1_mv`), each join gets
-a distinct right-side alias — `all_users_v1_mv`, then `all_users_v1_mv_2` — so Genie can join
+`buyer_id` *and* `requested_by_id` both reference `customers`), each join gets
+a distinct right-side alias — `customers`, then `customers_2` — so Genie can join
 the same dimension twice without an alias clash.
 
 > **UC name resolution:** the left table uses the row's authoritative `uc_name`. The right
@@ -107,7 +107,7 @@ split into a list.
 ```json
 {
   "name": "Contracts",
-  "code": "PO_APPL_DESC in ('LINCS Subcontract', 'PARIS PO')",
+  "code": "ORDER_TYPE in ('Wholesale', 'Distributor')",
   "synonyms": "Subcontracts, Contracts",
   "instructions": "When the user searches for \"Contracts\" or \"Subcontracts\" apply this filter.",
   "Type": "Filter"
@@ -118,13 +118,13 @@ split into a list.
 ```json
 {
   "display_name": "Contracts",
-  "sql": "PO_APPL_DESC in ('LINCS Subcontract', 'PARIS PO')",
+  "sql": "ORDER_TYPE in ('Wholesale', 'Distributor')",
   "instruction": "When the user searches for \"Contracts\" or \"Subcontracts\" apply this filter.",
   "synonyms": ["Subcontracts", "Contracts"]
 }
 ```
 
-A measure like `{"name":"Total Spend","code":"SUM(PO_DOL_GRS_AMT)","Type":"Expression"}` produces
+A measure like `{"name":"Total Spend","code":"SUM(GROSS_AMOUNT)","Type":"Expression"}` produces
 the same snippet shape but lands in `sql_expressions` instead of `sql_filters`.
 
 ### 3c. `sample_query_<label>` → Genie **example**
@@ -133,8 +133,8 @@ the same snippet shape but lands in `sql_expressions` instead of `sql_filters`.
 ```json
 {
   "name": "Orders for Project Task",
-  "question": "Which orders are tied to P/T 40160 1.03.04.21.1602.04?",
-  "query": "select distinct po.po_no from lincsvectr.po_edd_mv po where pt.project_no = :project"
+  "question": "Which orders are tied to project task 12345?",
+  "query": "select distinct po.order_id from sales.orders po where pt.project_no = :project"
 }
 ```
 
@@ -142,8 +142,8 @@ the same snippet shape but lands in `sql_expressions` instead of `sql_filters`.
 name:
 ```json
 {
-  "question": "Which orders are tied to P/T 40160 1.03.04.21.1602.04?",
-  "sql": "select distinct po.po_no from llnl_livit_catalog_genie_lab_623_poc.oracle_26ai_test4.po_edd_mv po where pt.project_no = :project"
+  "question": "Which orders are tied to project task 12345?",
+  "sql": "select distinct po.order_id from bg.sales.orders po where pt.project_no = :project"
 }
 ```
 
@@ -163,14 +163,14 @@ System instructions normally arrive via the `AI_GUIDANCE` table **comment** (com
 
 ## 4. End-to-end example
 
-Input registry rows (5 annotations on `PO_EDD_MV`): two `foreign_key`, one `sql_expression`
+Input registry rows (5 annotations on `ORDERS`): two `foreign_key`, one `sql_expression`
 filter, one `sql_expression` measure, one `sample_query`. Rendering produces:
 
 ```
 joins=2 filters=1 expressions=1 examples=1 instructions=0 skipped=0 repaired=1 warnings=1
 ```
 
-The resulting portable config has `joins` (2, with `all_users_v1_mv` / `all_users_v1_mv_2`
+The resulting portable config has `joins` (2, with `customers` / `customers_2`
 aliases), `sql_filters` (1: Contracts), `sql_expressions` (1: Total Spend), and `examples` (1,
 schema-rewritten). `repaired=1` flags the filter whose JSON needed lenient recovery; `warnings=1`
 flags the sample query's `:project` bind variable.
@@ -217,7 +217,7 @@ noted; JSON missing required fields becomes a flagged `UnknownAnnotation` rather
 
 ---
 
-## 7. Open items (pending confirmation from LLNL)
+## 7. Open items (pending confirmation from the source team)
 
 - **Full enumeration of `Type` values** for `sql_expression` — currently `"Filter"` → filter,
   everything else → expression.

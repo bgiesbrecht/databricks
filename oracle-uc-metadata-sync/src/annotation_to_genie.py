@@ -5,7 +5,7 @@ Second layer on top of `annotation_parser`: turns a ParsedAnnotations into the p
 config dict consumed by `update_genie_space.GenieSpaces.apply_config()` / `.create()`
 (schema documented in update_genie_space.py, "Portable config → inner-doc applier").
 
-Mapping (LLNL JSON annotation spec, 2026-07)
+Mapping (JSON annotation spec, 2026-07)
 --------------------------------------------
   foreign_key             -> joins             relationship + join_condition come straight from
                                                the JSON; role-playing dims get unique aliases
@@ -18,7 +18,7 @@ Mapping (LLNL JSON annotation spec, 2026-07)
 Only sections with content are emitted — matching genie_push.py's "touch only the sections
 we produced" contract. `render_genie_config` returns (config, RenderReport); the report
 counts each section, lists skips (e.g. an FK whose UC table couldn't be resolved), and
-surfaces `repaired` items (annotations that only parsed via the lenient fallback — tell LLNL).
+surfaces `repaired` items (annotations that only parsed via the lenient fallback — flag upstream).
 
 Integration:
     from annotation_parser import parse_csv

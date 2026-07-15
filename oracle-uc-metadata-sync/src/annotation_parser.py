@@ -1,12 +1,12 @@
 """
-annotation_parser.py — Oracle annotation parser (JSON value format, LLNL 2026-07 spec).
+annotation_parser.py — Oracle annotation parser (JSON value format, 2026-07 spec).
 
 Turns rows from the `oracle_annotations` registry (as produced by the Oracle -> UC metadata
 sync, or exported to CSV) into typed, structured annotations grouped per UC object. Intent:
 feed downstream consumers — Genie / Select AI space instructions, join hints, named SQL
 expressions, and sample queries (see hooks/genie_push and annotation_to_genie).
 
-Annotation grammar (per Ben Eadington / Phil, 2026-07-10)
+Annotation grammar (JSON value spec, 2026-07)
 --------------------------------------------------------
 The annotation VALUE is now a JSON object that mirrors the Databricks structure. The
 `annotation_name` prefix selects the shape:
@@ -19,7 +19,7 @@ The annotation VALUE is now a JSON object that mirrors the Databricks structure.
 Notes / hazards this parser defends against:
   * The authored JSON can be INVALID — `instructions` often contains unescaped double quotes
     (e.g. searches for "Contracts"). We try strict json.loads first, then fall back to a
-    lenient flat-object parser and set `parse_note` so the caller can flag it back to LLNL.
+    lenient flat-object parser and set `parse_note` so the caller can flag it back to the source.
   * Key casing is inconsistent (Instructions/Type vs instructions) — keys are matched
     case-insensitively.
   * Table names in the JSON carry no schema/catalog — UC resolution happens in the renderer.
@@ -183,7 +183,7 @@ def parse_json_tolerant(raw: str) -> "tuple[dict, Optional[str]]":
     """Parse a flat JSON object. Returns (dict, note). note is None on a clean strict parse,
     else a short string explaining the lenient repair.
 
-    The lenient path handles the common LLNL defect: unescaped double quotes inside string
+    The lenient path handles the common source defect: unescaped double quotes inside string
     values. It locates top-level `"key":` positions and slices each value between them, so a
     stray quote in the middle of a value (not followed by a colon) can't fool it.
     """

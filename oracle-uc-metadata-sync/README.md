@@ -487,11 +487,11 @@ examples, and the parse→produce mapping are in **[ANNOTATION_PARSING.md](ANNOT
 | `sample_query_<label>` | table | **example** query (Oracle schema prefix rewritten to the UC name) |
 | `AI_GUIDANCE` table comment | table | system **instructions** (via the comments leg) |
 
-Example — a foreign key on `PO_EDD_MV.PER_INTR_NO_BUY` (Oracle 26ai):
+Example — a foreign key on `ORDERS.BUYER_ID` (Oracle 26ai):
 ```sql
-ALTER MATERIALIZED VIEW po_edd_mv MODIFY per_intr_no_buy ANNOTATIONS (REPLACE foreign_key '{
-  "left_table": "po_edd_mv", "right_table": "all_users_v1_mv", "join_condition": "=",
-  "left_column": "per_intr_no_buy", "right_column": "per_intr_no",
+ALTER MATERIALIZED VIEW orders MODIFY buyer_id ANNOTATIONS (REPLACE foreign_key '{
+  "left_table": "orders", "right_table": "customers", "join_condition": "=",
+  "left_column": "buyer_id", "right_column": "customer_id",
   "relationship": "Many to One", "Type": "Join" }');
 ```
 The hook resolves both sides to their UC names (via `resolve_uc_name`, honoring per-object overrides) and emits
