@@ -24,8 +24,8 @@ Usage:
 
     # Generate via a Databricks serving endpoint (works with the CLI auth here):
     python3 ir_to_sparksql.py out/ir/custom_lesson1.json \
-        --backend databricks --endpoint databricks-claude-3-7-sonnet \
-        --profile e2-demo-field-eng --out out/gen/
+        --backend databricks --endpoint databricks-claude-opus-5 \
+        --profile <your-profile> --out out/gen/
 
     # Generate via the Anthropic SDK (needs ANTHROPIC_API_KEY or `ant auth login`):
     python3 ir_to_sparksql.py out/ir/custom_lesson1.json --backend anthropic --out out/gen/

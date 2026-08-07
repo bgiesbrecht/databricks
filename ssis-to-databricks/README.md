@@ -135,7 +135,7 @@ Or the supported CLI form (on these particular packages `--generate-json` may re
 schema-validation error, but the `.xlsx` report still lands):
 
 ```bash
-export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng   # avoids multi-profile auth ambiguity
+export DATABRICKS_CONFIG_PROFILE=<your-profile>   # avoids multi-profile auth ambiguity
 databricks labs lakebridge analyze \
   --source-directory "$(pwd)/samples/external/SSIS-Examples" \
   --report-file "$(pwd)/out/analysis_report.xlsx" \
@@ -161,7 +161,7 @@ transpiler's `config.yml` is stale — add `ssis` to its `dialects:` list and an
 `~/.databricks/labs/remorph-transpilers/bladebridge/lib/config.yml`).
 
 ```bash
-export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng
+export DATABRICKS_CONFIG_PROFILE=<your-profile>
 BBCONF=~/.databricks/labs/remorph-transpilers/bladebridge/lib/config.yml
 databricks labs lakebridge transpile \
   --input-source "$(pwd)/samples/external/SSIS-Examples" \
@@ -293,7 +293,7 @@ of the semantic detail the IR-grounded prompt is designed to carry through.
 python3 ir_to_sparksql.py out/ir/unpivot.json --dry-run
 
 # 2a. Databricks serving endpoint (needs `databricks-sdk`; auth via ~/.databrickscfg):
-export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng
+export DATABRICKS_CONFIG_PROFILE=<your-profile>
 python3 ir_to_sparksql.py out/ir/unpivot.json \
   --backend databricks --endpoint databricks-claude-opus-5 --out out/gen/
 
@@ -447,7 +447,7 @@ its output — like any automated conversion — requires review before producti
 | `describe-transpile` doesn't list `ssis` | Upgrade Lakebridge/bb-plugin; add `ssis` to the BladeBridge `config.yml` (§2) |
 | `Invalid value for '--source-dialect': 'ssis'` | Same as above — stale transpiler config |
 | `No mapping for source tech SSIS and target tech PYSPARK` | SSIS only maps to `SPARKSQL`; use `--target-technology SPARKSQL` |
-| `403` on `databricks-switch-plugin` / pip installs | Use `--index-url https://pypi-proxy.cloud.databricks.com/simple` |
+| `403` on `databricks-switch-plugin` / pip installs | Point pip at your organization's package index/proxy via `--index-url` |
 | `DEFAULT and default and … match <host>` auth error | Set `export DATABRICKS_CONFIG_PROFILE=<profile>` (multiple profiles share one host) |
 | Notebook: `ModuleNotFoundError: openai` | Not applicable — the notebook uses `serving_endpoints.query`, not the OpenAI client |
 | Analyzer `--generate-json` reports a schema-validation error on some packages | The JSON is written before the check runs, so `extract_ir_lakebridge.sh` reads it directly; consider reporting the case upstream |
