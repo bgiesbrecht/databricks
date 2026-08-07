@@ -115,10 +115,6 @@ which is gitignored.
 | `ir_to_sparksql.py` (local) | Python 3.9+; one backend SDK — `databricks-sdk` (databricks), `anthropic` (anthropic), or `openai` (openai). `--dry-run` needs none. |
 | **Databricks notebook** | **Nothing extra** — `databricks-sdk` is preinstalled; stdlib-only parser; notebook auth is automatic |
 
-> **Internal Databricks note:** if `pip`/`labs install` fails with a 403 on
-> `databricks-switch-plugin` or similar, point pip at the working proxy:
-> `--index-url https://pypi-proxy.cloud.databricks.com/simple` (the `.dev` proxy 403s).
-
 ---
 
 ## 1. Assess packages with Lakebridge (optional)
