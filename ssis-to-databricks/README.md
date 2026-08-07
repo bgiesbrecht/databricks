@@ -74,7 +74,7 @@ to `.dtsx` files with one extraction step.
 - `.dtsConfig` — package configurations (older package deployment model; externalized
   connection strings and variable values)
 
-> ⚠️ **Project deployment model caveat.** With project-scoped deployment, connection
+> **Project deployment model caveat.** With project-scoped deployment, connection
 > strings and parameters often live in `.conmgr` / `.params` / the `.dtproj` — *outside*
 > each `.dtsx`. The custom IR parser (`dtsx_to_ir.py` and the notebook) currently reads
 > connections and variables from **within** each `.dtsx` only. If your real packages come
@@ -92,13 +92,17 @@ export from SSISDB/msdb first. Everything downstream in this README is identical
 
 ```
 extract_ir_lakebridge.sh              # Lakebridge analyzer → JSON IR (reads the JSON directly)
-dtsx_to_ir.py                         # standalone .dtsx → custom JSON IR (lxml)
+dtsx_to_ir.py                         # standalone .dtsx → JSON IR (lxml)
 ir_to_sparksql.py                     # IR → SparkSQL via pluggable LLM (local CLI)
 notebooks/
   ir_to_sparksql_databricks.py        # all-in-one Databricks notebook (raw .dtsx → SparkSQL)
-packages/ms-tutorial/Lesson 1-6.dtsx  # sample packages (MS "Creating a Simple ETL Package")
-out/                                  # example outputs (analysis reports, IR, transpiled)
+samples/synthetic/                    # small .dtsx authored here (Pivot, Unpivot, Fuzzy+Cache, ADO loop)
+scripts/fetch_samples.sh              # clone third-party test packages into samples/external/
+ATTRIBUTION.md                        # credit + licenses for the fetched packages
 ```
+
+Generated output (IR JSON, converted notebooks, analyzer reports) is written to `out/`,
+which is gitignored.
 
 ---
 
@@ -126,7 +130,8 @@ and the embedded SQL from each component) plus a JSON inventory.
 # Wrapper that calls the analyzer binary directly. On some package sets, the
 # --generate-json flag hits a strict output-schema check; the JSON is written before
 # that check, so this wrapper reads it directly. (Worth reporting upstream if you hit it.)
-./extract_ir_lakebridge.sh "packages/ms-tutorial" "out/ir"
+./scripts/fetch_samples.sh   # first, to get the tutorial packages
+./extract_ir_lakebridge.sh "samples/external/SSIS-Examples" "out/ir"
 # → out/ir/report.xlsx  and  out/ir/ir.json
 ```
 
@@ -136,7 +141,7 @@ schema-validation error, but the `.xlsx` report still lands):
 ```bash
 export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng   # avoids multi-profile auth ambiguity
 databricks labs lakebridge analyze \
-  --source-directory "$(pwd)/packages/ms-tutorial" \
+  --source-directory "$(pwd)/samples/external/SSIS-Examples" \
   --report-file "$(pwd)/out/analysis_report.xlsx" \
   --source-tech SSIS
 ```
@@ -163,7 +168,7 @@ transpiler's `config.yml` is stale — add `ssis` to its `dialects:` list and an
 export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng
 BBCONF=~/.databricks/labs/remorph-transpilers/bladebridge/lib/config.yml
 databricks labs lakebridge transpile \
-  --input-source "$(pwd)/packages/ms-tutorial" \
+  --input-source "$(pwd)/samples/external/SSIS-Examples" \
   --output-folder "$(pwd)/out/transpiled" \
   --source-dialect ssis \
   --target-technology SPARKSQL \
@@ -183,12 +188,12 @@ data-flow detail automatically; see "When to consider this approach."
 
 ## 3. Extract logic into a custom IR (local)
 
-A dependency-light parser (`lxml`) that builds an open IR capturing the data-flow graph
+A small parser (`lxml`) that builds an open IR capturing the data-flow graph
 in detail — edges, lookup join keys and dispositions, and per-component transform logic.
 
 ```bash
-python3 dtsx_to_ir.py "packages/ms-tutorial/Lesson 1.dtsx" --out out/ir/custom_lesson1.json
-python3 dtsx_to_ir.py "packages/ms-tutorial" --out out/ir/custom_all.json   # whole folder
+python3 dtsx_to_ir.py "samples/synthetic/Unpivot_Demo.dtsx" --out out/ir/unpivot.json
+python3 dtsx_to_ir.py "samples/synthetic" --out out/ir/all.json   # whole folder
 ```
 
 **IR shape** (per package):
@@ -289,18 +294,18 @@ of the semantic detail the IR-grounded prompt is designed to carry through.
 
 ```bash
 # 1. Inspect the grounded prompts — no LLM, no dependencies:
-python3 ir_to_sparksql.py out/ir/custom_lesson1.json --dry-run
+python3 ir_to_sparksql.py out/ir/unpivot.json --dry-run
 
 # 2a. Databricks serving endpoint (needs `databricks-sdk`; auth via ~/.databrickscfg):
 export DATABRICKS_CONFIG_PROFILE=e2-demo-field-eng
-python3 ir_to_sparksql.py out/ir/custom_lesson1.json \
+python3 ir_to_sparksql.py out/ir/unpivot.json \
   --backend databricks --endpoint databricks-claude-opus-5 --out out/gen/
 
 # 2b. Anthropic / Claude direct (needs `anthropic` + ANTHROPIC_API_KEY or `ant auth login`):
-python3 ir_to_sparksql.py out/ir/custom_lesson1.json --backend anthropic --model claude-opus-5 --out out/gen/
+python3 ir_to_sparksql.py out/ir/unpivot.json --backend anthropic --model claude-opus-5 --out out/gen/
 
 # 2c. Any OpenAI-compatible endpoint — OpenAI, Azure, Copilot, gateway (needs `openai`):
-python3 ir_to_sparksql.py out/ir/custom_lesson1.json \
+python3 ir_to_sparksql.py out/ir/unpivot.json \
   --backend openai --model gpt-4o --base-url https://your-gateway/v1 --out out/gen/
 ```
 
@@ -416,10 +421,10 @@ its output — like any automated conversion — requires review before producti
   Slowly Changing Dimension wizard (`Microsoft.SCD` → set-based `MERGE INTO`). Verified
   end-to-end on real GitHub packages up to 40 nodes / 7 component types each.
   Also handled: Pivot (→`PIVOT`), UnPivot (→`STACK`), Row Count, Fuzzy Lookup (→best-effort
-  join + ⚠️ note; Spark has no fuzzy join), Cache Transform (→temp view), Flat File
+  join + note; Spark has no fuzzy join), Cache Transform (→temp view), Flat File
   Destination (→`INSERT OVERWRITE DIRECTORY`), Script Component (→code-preserving passthrough
   with a MANUAL-REVIEW banner — never a fabricated C#/VB translation), and non-file ForEach
-  enumerators (ADO/item/nodelist → loop captured + ⚠️ set-based-rewrite note). Validated
+  enumerators (ADO/item/nodelist → loop captured + set-based-rewrite note). Validated
   against 114 real+synthetic packages (525 pipeline nodes); synthetic examples for types rare
   on public GitHub live in `packages/synthetic/`.
 - **Still unhandled** (conservative pass-through, not real logic) — the long tail, ~5% of

@@ -770,7 +770,7 @@ def ground_node(node, edges, nodes):
             f"Minimum similarity threshold (0..1): {logic.get('minSimilarity')}",
             "This is a FUZZY LOOKUP (approximate string match) — Spark has no built-in "
             "fuzzy join. Emit a best-effort LEFT JOIN on the reference table and add a "
-            "⚠️ comment that exact equality is a placeholder for fuzzy matching; suggest "
+            "comment that exact equality is a placeholder for fuzzy matching; suggest "
             "`levenshtein()`/`soundex()` or a similarity UDF with the given threshold as "
             "the real implementation. Do NOT silently pretend it is an exact match.",
         ]
@@ -843,7 +843,7 @@ def _presolve_script(node):
     out_cols = logic.get("outputColumns") or []
     src = logic.get("sourceCode")
     banner = [
-        f"-- ⚠️ MANUAL REVIEW REQUIRED: SSIS Script Component '{node['name']}' ({lang}).",
+        f"-- MANUAL REVIEW REQUIRED: SSIS Script Component '{node['name']}' ({lang}).",
         "--    Arbitrary script logic is NOT auto-translated. Rows are passed through "
         "unchanged below.",
         f"--    Declared output columns to reproduce: {out_cols}",
@@ -925,19 +925,19 @@ def ground_task(ex):
     if t == "script_task":
         return {"kind": "presolved",
                 "presolved": (
-                    f"-- ⚠️ MANUAL REVIEW: SSIS Script Task '{ex['name']}' "
+                    f"-- MANUAL REVIEW: SSIS Script Task '{ex['name']}' "
                     f"({task.get('scriptLanguage') or 'script'}). Arbitrary code is not "
                     f"auto-translated — port the logic here.")}
     if t == "execute_process":
         return {"kind": "presolved",
                 "presolved": (
-                    f"-- ⚠️ MANUAL REVIEW: SSIS Execute Process Task '{ex['name']}' ran an "
+                    f"-- MANUAL REVIEW: SSIS Execute Process Task '{ex['name']}' ran an "
                     f"external process: {task.get('executable')} {task.get('arguments') or ''}\n"
                     f"-- Re-implement as a Databricks job step / %sh cell as appropriate.")}
     # other_task
     return {"kind": "presolved",
             "presolved": (
-                f"-- ⚠️ MANUAL REVIEW: SSIS task '{ex['name']}' "
+                f"-- MANUAL REVIEW: SSIS task '{ex['name']}' "
                 f"({task.get('taskKind')}) has no automatic Spark equivalent — port manually.")}
 
 
@@ -1178,7 +1178,7 @@ for ex in pkg["controlFlow"]["executables"]:
                   "cell below (edit the Volume path).", ""]
     elif lp.get("enumerator") == "ado":
         lines += ["# COMMAND ----------",
-                  f"# ⚠️ NOTE: SSIS ForeachLoop '{ex['name']}' iterated over an ADO "
+                  f"# NOTE: SSIS ForeachLoop '{ex['name']}' iterated over an ADO "
                   f"recordset in variable '{lp.get('sourceVariable')}', binding "
                   f"{lp.get('variableMappings')}.",
                   "# In Spark, prefer a SET-BASED rewrite: join/operate on the whole "
@@ -1186,7 +1186,7 @@ for ex in pkg["controlFlow"]["executables"]:
                   "generated as if processing the full set; review the per-row logic.", ""]
     else:
         lines += ["# COMMAND ----------",
-                  f"# ⚠️ NOTE: SSIS ForeachLoop '{ex['name']}' uses a "
+                  f"# NOTE: SSIS ForeachLoop '{ex['name']}' uses a "
                   f"'{lp.get('enumerator')}' enumerator (not file/ADO). Review the "
                   "iteration semantics — this was not specially converted.", ""]
 for p in prompts:

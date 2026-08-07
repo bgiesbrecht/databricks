@@ -12,7 +12,7 @@ Design goals vs. Lakebridge's analyzer JSON:
   * capture data-flow EDGES (analyzer only lists node counts)
   * capture lookup JOIN KEYS + no-match disposition (analyzer drops these)
   * capture connection managers, variables, precedence constraints
-  * stay dependency-light: stdlib + lxml only, no native binary, no license
+  * stdlib + lxml only, no native binary, no license
 
 Usage:
     python3 dtsx_to_ir.py <file-or-dir> [--out out.json]
