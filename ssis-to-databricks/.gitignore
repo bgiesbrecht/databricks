@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated output (IR JSON, transpiled notebooks, analyzer reports)
+out/
+*.log
+
+# macOS
+.DS_Store
+
+# Local scratch
+scratch/
+tmp/
+
+# Fetched third-party samples (see ATTRIBUTION.md / scripts/fetch_samples.sh)
+samples/external/

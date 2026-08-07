@@ -1,0 +1,121 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+  DTS:ObjectName="FuzzyCache_Demo"
+  DTS:CreationName="Microsoft.Package"
+  DTS:ExecutableType="Microsoft.Package">
+  <DTS:ConnectionManagers>
+    <DTS:ConnectionManager DTS:ObjectName="localhost.RefDB" DTS:CreationName="OLEDB">
+      <DTS:ObjectData>
+        <DTS:ConnectionManager DTS:ConnectionString="Data Source=localhost;Initial Catalog=RefDB;Provider=SQLNCLI11.1;Integrated Security=SSPI;" />
+      </DTS:ObjectData>
+    </DTS:ConnectionManager>
+    <DTS:ConnectionManager DTS:ObjectName="ProductCache" DTS:CreationName="CACHE" />
+  </DTS:ConnectionManagers>
+  <DTS:Executables>
+    <DTS:Executable DTS:ObjectName="Build Cache DFT" DTS:CreationName="Microsoft.Pipeline"
+      DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData>
+        <pipeline>
+          <components>
+            <component refId="Package\Build Cache DFT\Product Ref Source"
+              name="Product Ref Source" componentClassID="Microsoft.OLEDBSource">
+              <properties>
+                <property name="OpenRowset">[dbo].[ProductMaster]</property>
+                <property name="AccessMode">0</property>
+              </properties>
+              <outputs>
+                <output name="OLE DB Source Output">
+                  <outputColumns>
+                    <outputColumn name="ProductKey" dataType="i4" />
+                    <outputColumn name="ProductName" dataType="wstr" length="100" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Build Cache DFT\Populate Product Cache"
+              name="Populate Product Cache" componentClassID="Microsoft.Cache">
+              <properties>
+                <property name="ConnectionManagerID">ProductCache</property>
+              </properties>
+              <inputs><input name="Cache Input" /></inputs>
+              <outputs>
+                <output name="Cache Output">
+                  <outputColumns>
+                    <outputColumn name="ProductKey" dataType="i4" />
+                    <outputColumn name="ProductName" dataType="wstr" length="100" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+          </components>
+          <paths>
+            <path name="p1"
+              startId="Package\Build Cache DFT\Product Ref Source.Outputs[OLE DB Source Output]"
+              endId="Package\Build Cache DFT\Populate Product Cache.Inputs[Cache Input]" />
+          </paths>
+        </pipeline>
+      </DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:ObjectName="Match DFT" DTS:CreationName="Microsoft.Pipeline"
+      DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData>
+        <pipeline>
+          <components>
+            <component refId="Package\Match DFT\Incoming Products"
+              name="Incoming Products" componentClassID="Microsoft.OLEDBSource">
+              <properties>
+                <property name="OpenRowset">[staging].[RawProducts]</property>
+                <property name="AccessMode">0</property>
+              </properties>
+              <outputs>
+                <output name="OLE DB Source Output">
+                  <outputColumns>
+                    <outputColumn name="RawProductName" dataType="wstr" length="100" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Match DFT\Fuzzy Match Product"
+              name="Fuzzy Match Product" componentClassID="Microsoft.FuzzyLookup">
+              <properties>
+                <property name="ReferenceTableName">[dbo].[ProductMaster]</property>
+                <property name="MinSimilarity">0.75</property>
+                <property name="MaxOutputMatchesPerInput">1</property>
+              </properties>
+              <inputs>
+                <input name="Fuzzy Lookup Input">
+                  <inputColumns>
+                    <inputColumn cachedName="RawProductName" />
+                  </inputColumns>
+                </input>
+              </inputs>
+              <outputs>
+                <output name="Fuzzy Lookup Output">
+                  <outputColumns>
+                    <outputColumn name="ProductKey" dataType="i4" />
+                    <outputColumn name="_Similarity" dataType="r4" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Match DFT\Matched Destination"
+              name="Matched Destination" componentClassID="Microsoft.OLEDBDestination">
+              <properties>
+                <property name="OpenRowset">[dbo].[MatchedProducts]</property>
+                <property name="AccessMode">3</property>
+              </properties>
+            </component>
+          </components>
+          <paths>
+            <path name="p1"
+              startId="Package\Match DFT\Incoming Products.Outputs[OLE DB Source Output]"
+              endId="Package\Match DFT\Fuzzy Match Product.Inputs[Fuzzy Lookup Input]" />
+            <path name="p2"
+              startId="Package\Match DFT\Fuzzy Match Product.Outputs[Fuzzy Lookup Output]"
+              endId="Package\Match DFT\Matched Destination.Inputs[OLE DB Destination Input]" />
+          </paths>
+        </pipeline>
+      </DTS:ObjectData>
+    </DTS:Executable>
+  </DTS:Executables>
+</DTS:Executable>

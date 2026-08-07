@@ -1,0 +1,100 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+  DTS:ObjectName="Unpivot_Demo"
+  DTS:CreationName="Microsoft.Package"
+  DTS:ExecutableType="Microsoft.Package">
+  <DTS:ConnectionManagers>
+    <DTS:ConnectionManager DTS:ObjectName="localhost.SalesDB" DTS:CreationName="OLEDB">
+      <DTS:ObjectData>
+        <DTS:ConnectionManager DTS:ConnectionString="Data Source=localhost;Initial Catalog=SalesDB;Provider=SQLNCLI11.1;Integrated Security=SSPI;" />
+      </DTS:ObjectData>
+    </DTS:ConnectionManager>
+  </DTS:ConnectionManagers>
+  <DTS:Executables>
+    <DTS:Executable DTS:ObjectName="Data Flow Task" DTS:CreationName="Microsoft.Pipeline"
+      DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData>
+        <pipeline>
+          <components>
+            <component refId="Package\Data Flow Task\Quarterly Sales Source"
+              name="Quarterly Sales Source" componentClassID="Microsoft.OLEDBSource">
+              <properties>
+                <property name="OpenRowset">[dbo].[QuarterlySales]</property>
+                <property name="AccessMode">0</property>
+              </properties>
+              <outputs>
+                <output name="OLE DB Source Output">
+                  <outputColumns>
+                    <outputColumn name="Region" dataType="wstr" length="50" />
+                    <outputColumn name="Q1" dataType="i4" />
+                    <outputColumn name="Q2" dataType="i4" />
+                    <outputColumn name="Q3" dataType="i4" />
+                    <outputColumn name="Q4" dataType="i4" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Data Flow Task\Unpivot Quarters"
+              name="Unpivot Quarters" componentClassID="Microsoft.UnPivot">
+              <inputs>
+                <input name="Unpivot Input">
+                  <inputColumns>
+                    <inputColumn cachedName="Region" />
+                    <inputColumn cachedName="Q1">
+                      <properties>
+                        <property name="PivotKeyValue">Q1</property>
+                        <property name="DestinationColumn">SalesAmount</property>
+                      </properties>
+                    </inputColumn>
+                    <inputColumn cachedName="Q2">
+                      <properties>
+                        <property name="PivotKeyValue">Q2</property>
+                        <property name="DestinationColumn">SalesAmount</property>
+                      </properties>
+                    </inputColumn>
+                    <inputColumn cachedName="Q3">
+                      <properties>
+                        <property name="PivotKeyValue">Q3</property>
+                        <property name="DestinationColumn">SalesAmount</property>
+                      </properties>
+                    </inputColumn>
+                    <inputColumn cachedName="Q4">
+                      <properties>
+                        <property name="PivotKeyValue">Q4</property>
+                        <property name="DestinationColumn">SalesAmount</property>
+                      </properties>
+                    </inputColumn>
+                  </inputColumns>
+                </input>
+              </inputs>
+              <outputs>
+                <output name="Unpivot Output">
+                  <outputColumns>
+                    <outputColumn name="Region" dataType="wstr" length="50" />
+                    <outputColumn name="Quarter" dataType="wstr" length="10" />
+                    <outputColumn name="SalesAmount" dataType="i4" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Data Flow Task\Sales Long Destination"
+              name="Sales Long Destination" componentClassID="Microsoft.OLEDBDestination">
+              <properties>
+                <property name="OpenRowset">[dbo].[SalesLong]</property>
+                <property name="AccessMode">3</property>
+              </properties>
+            </component>
+          </components>
+          <paths>
+            <path name="p1"
+              startId="Package\Data Flow Task\Quarterly Sales Source.Outputs[OLE DB Source Output]"
+              endId="Package\Data Flow Task\Unpivot Quarters.Inputs[Unpivot Input]" />
+            <path name="p2"
+              startId="Package\Data Flow Task\Unpivot Quarters.Outputs[Unpivot Output]"
+              endId="Package\Data Flow Task\Sales Long Destination.Inputs[OLE DB Destination Input]" />
+          </paths>
+        </pipeline>
+      </DTS:ObjectData>
+    </DTS:Executable>
+  </DTS:Executables>
+</DTS:Executable>

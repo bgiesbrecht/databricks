@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+  DTS:ObjectName="Pivot_Demo"
+  DTS:CreationName="Microsoft.Package"
+  DTS:ExecutableType="Microsoft.Package">
+  <DTS:ConnectionManagers>
+    <DTS:ConnectionManager DTS:ObjectName="localhost.SalesDB" DTS:CreationName="OLEDB">
+      <DTS:ObjectData>
+        <DTS:ConnectionManager DTS:ConnectionString="Data Source=localhost;Initial Catalog=SalesDB;Provider=SQLNCLI11.1;Integrated Security=SSPI;" />
+      </DTS:ObjectData>
+    </DTS:ConnectionManager>
+  </DTS:ConnectionManagers>
+  <DTS:Executables>
+    <DTS:Executable DTS:ObjectName="Data Flow Task" DTS:CreationName="Microsoft.Pipeline"
+      DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData>
+        <pipeline>
+          <components>
+            <component refId="Package\Data Flow Task\Sales Long Source"
+              name="Sales Long Source" componentClassID="Microsoft.OLEDBSource">
+              <properties>
+                <property name="OpenRowset">[dbo].[SalesLong]</property>
+                <property name="AccessMode">0</property>
+              </properties>
+              <outputs>
+                <output name="OLE DB Source Output">
+                  <outputColumns>
+                    <outputColumn name="Region" dataType="wstr" length="50" />
+                    <outputColumn name="Quarter" dataType="wstr" length="10" />
+                    <outputColumn name="SalesAmount" dataType="i4" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Data Flow Task\Pivot Quarters"
+              name="Pivot Quarters" componentClassID="Microsoft.Pivot">
+              <inputs>
+                <input name="Pivot Input">
+                  <inputColumns>
+                    <inputColumn cachedName="Region">
+                      <properties><property name="PivotUsage">1</property></properties>
+                    </inputColumn>
+                    <inputColumn cachedName="Quarter">
+                      <properties><property name="PivotUsage">2</property></properties>
+                    </inputColumn>
+                    <inputColumn cachedName="SalesAmount">
+                      <properties><property name="PivotUsage">3</property></properties>
+                    </inputColumn>
+                  </inputColumns>
+                </input>
+              </inputs>
+              <outputs>
+                <output name="Pivot Default Output">
+                  <outputColumns>
+                    <outputColumn name="Region" dataType="wstr" length="50" />
+                    <outputColumn name="Q1" dataType="i4" />
+                    <outputColumn name="Q2" dataType="i4" />
+                    <outputColumn name="Q3" dataType="i4" />
+                    <outputColumn name="Q4" dataType="i4" />
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\Data Flow Task\Sales Wide Destination"
+              name="Sales Wide Destination" componentClassID="Microsoft.OLEDBDestination">
+              <properties>
+                <property name="OpenRowset">[dbo].[SalesWide]</property>
+                <property name="AccessMode">3</property>
+              </properties>
+            </component>
+          </components>
+          <paths>
+            <path name="p1"
+              startId="Package\Data Flow Task\Sales Long Source.Outputs[OLE DB Source Output]"
+              endId="Package\Data Flow Task\Pivot Quarters.Inputs[Pivot Input]" />
+            <path name="p2"
+              startId="Package\Data Flow Task\Pivot Quarters.Outputs[Pivot Default Output]"
+              endId="Package\Data Flow Task\Sales Wide Destination.Inputs[OLE DB Destination Input]" />
+          </paths>
+        </pipeline>
+      </DTS:ObjectData>
+    </DTS:Executable>
+  </DTS:Executables>
+</DTS:Executable>
