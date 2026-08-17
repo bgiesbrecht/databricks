@@ -415,12 +415,15 @@ def ground_node(node: dict, edges: list[dict], nodes: list[dict]) -> dict | None
     return {"facts": "\n".join(f"- {f}" for f in facts), "kind": kind}
 
 
-def presolve_script(node: dict) -> str:
+def presolve_script(node: dict, error_input: bool = False) -> str:
     """Deterministic, code-PRESERVING passthrough for a Script Component. We never
     fabricate a translation of arbitrary C#/VB — instead we pass rows through and embed
-    the original script + a clear MANUAL-REVIEW banner for a human to port."""
+    the original script + a clear MANUAL-REVIEW banner for a human to port.
+
+    `error_input=True` when this component consumes an upstream Lookup's ERROR/NO-MATCH
+    output (a common error-handling pattern): the passthrough carries ALL upstream rows,
+    so we add a note to filter to the non-matching rows when porting."""
     logic = node.get("logic") or {}
-    ups = [view_name(e["from"]) for e in []]  # filled by caller context; see build_prompts
     lang = logic.get("scriptLanguage") or "unknown"
     ro = logic.get("readOnlyVariables") or ""
     rw = logic.get("readWriteVariables") or ""
@@ -439,7 +442,50 @@ def presolve_script(node: dict) -> str:
     if src:
         banner.append("--    Original script (first 4000 chars) preserved for porting:")
         banner += ["--    " + line for line in src.splitlines()]
-    return "\n".join(banner) + "\n-- Passthrough (replace with ported logic):\nSELECT * FROM {UPSTREAM}"
+    tail = ["-- Passthrough (replace with ported logic):"]
+    if error_input:
+        tail = [
+            "-- NOTE: consumes the upstream Lookup's ERROR/NO-MATCH output. With the Lookup",
+            "--       emitted as a LEFT JOIN, this view carries ALL rows — filter to the",
+            "--       non-matching rows only (e.g. WHERE <looked-up key> IS NULL) when porting.",
+        ] + tail
+    return "\n".join(banner + tail) + "\nSELECT * FROM {UPSTREAM}"
+
+
+def _qualify_table(name: str | None) -> str:
+    """T-SQL `[db].[schema].[tbl]` / `"a"."b"` quoting -> Spark backticks `a`.`b`."""
+    idents = [p.strip().strip('[]"`') for p in (name or "").split(".")]
+    idents = [i for i in idents if i]
+    return ".".join(f"`{i}`" for i in idents) if idents else "`<destination_table>`"
+
+
+def presolve_target(node: dict, edges: list[dict]) -> str:
+    """Deterministic write of the single upstream view to a destination.
+
+    A destination is mechanical (stream rows out) — there is no fuzzy SQL to translate,
+    so we emit it directly instead of asking the LLM, which can return an empty/partial
+    cell for a "just write it out" node. Emitted as a verbatim statement (kind=statement);
+    wrapping an INSERT in a view is invalid SQL."""
+    ins = incoming_edges(node, edges)
+    upstream = view_name(ins[0]["from"]) if ins else "/* upstream view */"
+    if node["componentType"] == "Microsoft.FlatFileDestination":
+        leaf = view_name(node["name"])[2:] or "output"  # drop the 'v_' prefix
+        return (
+            f"-- Flat File Destination '{node['name']}': write the upstream rows to a file.\n"
+            f"-- Set the output Volume path. Project explicit columns if you need to drop\n"
+            f"-- SSIS error-plumbing columns (ErrorCode, ErrorColumn, ...).\n"
+            f"INSERT OVERWRITE DIRECTORY '/Volumes/main/default/ssis_output/{leaf}'\n"
+            f"USING csv OPTIONS (header true)\n"
+            f"SELECT * FROM {upstream}"
+        )
+    # OLE DB / table destination.
+    table = _qualify_table((node.get("logic") or {}).get("openRowset"))
+    return (
+        f"-- OLE DB Destination '{node['name']}': insert the upstream rows into the target.\n"
+        f"-- Adjust the target name / column list to your Unity Catalog layout.\n"
+        f"INSERT INTO {table}\n"
+        f"SELECT * FROM {upstream}"
+    )
 
 
 def iter_dataflow_nodes(pkg: dict):
@@ -643,9 +689,16 @@ def _dataflow_prompts(df_name, nodes, edges, loop) -> list[dict]:
         # A Script Component is passed through with its code preserved for manual
         # porting — never a fabricated translation of arbitrary C#/VB.
         elif node["componentType"] == "Microsoft.ManagedComponentHost":
-            ups = [view_name(e["from"]) for e in incoming_edges(node, edges)]
+            ins = incoming_edges(node, edges)
+            ups = [view_name(e["from"]) for e in ins]
             upstream = ups[0] if ups else "/* upstream view */"
-            entry["presolved"] = presolve_script(node).replace("{UPSTREAM}", upstream)
+            err_in = any(_port_kind(e.get("fromPort")) == "error" for e in ins)
+            entry["presolved"] = presolve_script(node, error_input=err_in).replace("{UPSTREAM}", upstream)
+        # A destination is a mechanical "write the upstream out" — presolve it so the
+        # cell is always complete and valid, never an empty LLM response.
+        elif node.get("role") == "target":
+            entry["presolved"] = presolve_target(node, edges)
+            entry["kind"] = "statement"
         prompts.append(entry)
     return prompts
 
@@ -838,7 +891,8 @@ def main() -> int:
             print("=" * 78)
             print(f"NODE: {p['node']}  ({p['dataflow']})  ->  {p['view']}  [{p['kind']}]")
             print("-" * 78)
-            print(p["user_prompt"])
+            print(p.get("presolved") and f"[presolved — no LLM]\n{p['presolved']}"
+                  or p["user_prompt"])
             print()
         return 0
 
