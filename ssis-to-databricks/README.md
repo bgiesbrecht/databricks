@@ -310,6 +310,43 @@ install and the local Databricks auth setup.
 
 ---
 
+## 5a. Verify + fix/re-verify the generated SQL
+
+Both the CLI and the notebook can grade the generated cells and automatically re-generate the
+ones that fail — a lightweight guard against the "incomplete cell" class of bug (for example an
+empty error-handling cell).
+
+```bash
+# Verify after generating; re-generate failing LLM cells up to 3 times; write a findings report:
+python3 ir_to_sparksql.py out/ir/lesson6.json \
+  --backend databricks --endpoint databricks-claude-opus-5 \
+  --out out/gen/ --verify structural --max-iters 3 --report out/findings.json
+```
+
+In the notebook, set the **`verify`** widget to `true` (and `max_iters`) — the verification
+cell runs between generation and assembly.
+
+**What tier-1 `structural` checks (no Spark, no data):**
+
+- **Completeness / placeholder scan** — flags an empty or comment-only cell, or an unresolved
+  `{UPSTREAM}` / `/* upstream view */`. This is the check that catches an incomplete cell.
+- **DAG integrity** — every `FROM v_x` must reference a view defined by an earlier cell.
+- **Balanced parentheses** — a cheap truncation signal.
+- **Optional formal parse** — if `sqlglot` is installed, each cell is parsed with the Spark
+  dialect; skipped silently if it isn't.
+
+**The fix loop** re-generates only **LLM-generated** cells that failed, feeding the specific
+error back into the *original* grounded prompt (so a correction can't drift from the IR
+semantics). **Presolved (deterministic) cells are pinned** — a source glob, a destination
+`INSERT`/`MERGE`, or a script passthrough that fails verification is a bug in the parser or
+grounding, so it is reported for review and never sent to the loop. Residual findings (pinned
+failures, or anything still failing after `--max-iters`) are printed and written to `--report`.
+
+`compile` (resolve against schema-only Spark views) and `behavioral` (run on sample data,
+compare to golden) tiers are planned; `structural` runs today.
+
+---
+
 ## 6. Plugging in your own LLM provider
 
 Both generators treat the LLM as a single swappable function:
@@ -432,9 +469,11 @@ its output — like any automated conversion — requires review before producti
 - **SCD dimension table name** is not in the SCD component's own metadata (it comes from the
   downstream destination), so the generated `MERGE INTO` uses a `<dimension_table>` placeholder
   with a comment — set it before running.
-- **No output validation.** Generated SQL is not run against data here. For a true
-  apples-to-apples check, stand up `AdventureWorksDW` tables (or point at real UC
-  tables) and compare row counts / values against the original package.
+- **Structural verification only (no data validation yet).** `--verify structural` (§5a) grades
+  the generated SQL without Spark — syntax, completeness, DAG order — and re-generates failing
+  LLM cells. It does **not** run the SQL against data. For a true apples-to-apples check, stand up
+  `AdventureWorksDW` tables (or point at real UC tables) and compare row counts / values against
+  the original package; the `compile` and `behavioral` verify tiers that automate this are planned.
 - **`AdventureWorksDW2014` table names** in the generated SQL (`dbo.DimCurrency`, etc.)
   assume those tables exist in your catalog/schema — adjust references to your UC layout.
 

@@ -22,11 +22,15 @@ dbutils.widgets.text("dtsx_path", "/Volumes/main/default/ssis/Lesson 1.dtsx", "S
 dbutils.widgets.text("out_path", "/Volumes/main/default/ssis/generated_Lesson1.py", "Output notebook path (Volume)")
 dbutils.widgets.text("endpoint", "databricks-claude-opus-5", "FMAPI serving endpoint")
 dbutils.widgets.dropdown("dry_run", "false", ["true", "false"], "Dry run (print prompts, no LLM)")
+dbutils.widgets.dropdown("verify", "true", ["true", "false"], "Verify + fix/re-verify LLM cells")
+dbutils.widgets.text("max_iters", "3", "Max fix/re-verify iterations")
 
 DTSX_PATH = dbutils.widgets.get("dtsx_path")
 OUT_PATH = dbutils.widgets.get("out_path")
 ENDPOINT = dbutils.widgets.get("endpoint")
 DRY_RUN = dbutils.widgets.get("dry_run") == "true"
+VERIFY = dbutils.widgets.get("verify") == "true"
+MAX_ITERS = int(dbutils.widgets.get("max_iters") or "3")
 
 # COMMAND ----------
 
@@ -1196,6 +1200,111 @@ for p in prompts:
         continue
     print(f"[generate] {p['node']} ...")
     results[p["node"]] = generate(SYSTEM_PROMPT, p["user_prompt"])
+
+# COMMAND ----------
+
+# MAGIC %md ## Verify + fix/re-verify (tier-1 structural)
+# MAGIC
+# MAGIC Grades every generated cell without Spark or data: a completeness/placeholder scan
+# MAGIC (catches the empty/incomplete cell), DAG integrity (no `FROM v_x` before `v_x` is
+# MAGIC defined), balanced parens, and an optional `sqlglot` parse. Failing **LLM** cells are
+# MAGIC regenerated with the failure fed back into the original grounding; **presolved**
+# MAGIC (deterministic) cells are pinned — a failure there is a parser/grounding bug, surfaced
+# MAGIC for review, never looped. Toggle with the `verify` widget.
+
+# COMMAND ----------
+
+import re as _re
+
+# Only genuinely-incomplete markers — NOT intentional user-fill placeholders such as
+# `<dimension_table>` (SCD MERGE), which are documented limitations, not bugs.
+_PLACEHOLDERS = ["{UPSTREAM}", "/* upstream view */", "no output generated"]
+_SQL_KEYWORDS = ("select", "insert", "merge", "with", "update", "delete", "create")
+_VIEW_RE = _re.compile(r"\bv_[a-z0-9_]+\b")
+
+
+def _strip_comments(body):
+    return "\n".join(l for l in body.splitlines() if not l.strip().startswith("--")).strip()
+
+
+def _try_sqlglot(sql, kind):
+    try:
+        import sqlglot
+    except Exception:
+        return None
+    wrapped = sql if kind == "statement" else f"CREATE OR REPLACE TEMP VIEW _v AS {sql}"
+    try:
+        sqlglot.parse_one(wrapped, read="spark")
+        return None
+    except Exception as e:
+        return f"sqlglot parse error: {e}"
+
+
+def _build_cells(prompts, results):
+    cells = []
+    for p in prompts:
+        body = p["presolved"] if p.get("presolved") else _normalize_sql(results.get(p["node"], "") or "")
+        cells.append({"node": p["node"], "view": p["view"], "kind": p.get("kind"),
+                      "body": body, "presolved": bool(p.get("presolved"))})
+    return cells
+
+
+def _verify_cells(cells):
+    findings, defined = [], set()
+    for c in cells:
+        body = c["body"]
+        no_comments = _strip_comments(body)
+        hit = next((m for m in _PLACEHOLDERS if m in body), None)
+        if hit:
+            findings.append({**_meta(c), "category": "incomplete", "error": f"unresolved placeholder '{hit}'"})
+        elif not no_comments or not any(k in no_comments.lower() for k in _SQL_KEYWORDS):
+            findings.append({**_meta(c), "category": "incomplete", "error": "empty or comment-only body"})
+        else:
+            if no_comments.count("(") != no_comments.count(")"):
+                findings.append({**_meta(c), "category": "syntax", "error": "unbalanced parentheses"})
+            refs = {v for v in _VIEW_RE.findall(no_comments) if v != c["view"]}
+            missing = sorted(refs - defined)
+            if missing:
+                findings.append({**_meta(c), "category": "dag", "error": f"undefined upstream view(s): {missing}"})
+            err = _try_sqlglot(no_comments, c["kind"])
+            if err:
+                findings.append({**_meta(c), "category": "syntax", "error": err})
+        if c["kind"] != "statement":
+            defined.add(c["view"])
+    return findings
+
+
+def _meta(c):
+    return {"node": c["node"], "presolved": c["presolved"], "sql": c["body"]}
+
+
+if VERIFY:
+    prompt_by_node = {p["node"]: p for p in prompts}
+    _iters = 0
+    _findings = _verify_cells(_build_cells(prompts, results))
+    while _iters < MAX_ITERS:
+        _fixable = [f for f in _findings if not f["presolved"]]
+        if not _fixable:
+            break
+        for f in _fixable:
+            up = prompt_by_node[f["node"]]["user_prompt"]
+            corrective = (f"{up}\n\nYour previous attempt FAILED verification "
+                          f"({f['category']}): {f['error']}\nYou produced:\n{f['sql']}\n\n"
+                          f"Return corrected Spark SQL only.")
+            print(f"[fix] {f['node']}: {f['category']} — {f['error']}")
+            results[f["node"]] = generate(SYSTEM_PROMPT, corrective)
+        _iters += 1
+        _findings = _verify_cells(_build_cells(prompts, results))
+
+    if not _findings:
+        print(f"[verify] PASS — 0 findings after {_iters} fix iteration(s).")
+    else:
+        print(f"[verify] {len(_findings)} residual finding(s) after {_iters} iteration(s):")
+        for f in _findings:
+            pin = " (PINNED deterministic cell — parser/grounding bug)" if f["presolved"] else ""
+            print(f"  - {f['node']} [{f['category']}]: {f['error']}{pin}")
+else:
+    print("[verify] skipped (verify widget = false)")
 
 # COMMAND ----------
 

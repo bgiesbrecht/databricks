@@ -737,6 +737,16 @@ def get_provider(name: str, **kwargs) -> Generate:
     return PROVIDERS[name](**kwargs)
 
 
+@register_provider("mock")
+def _mock(**_) -> Generate:
+    """Offline test backend: emits `SELECT * FROM <first upstream view>` from the FACTS.
+    Does NOT translate logic — only for exercising assembly + the verifier without network."""
+    def generate(system_prompt: str, user_prompt: str) -> str:
+        m = re.search(r"Upstream view: (v_\w+)", user_prompt)
+        return f"SELECT * FROM {m.group(1)}" if m else "SELECT 1"
+    return generate
+
+
 @register_provider("anthropic")
 def _anthropic(model: str = "claude-opus-5", **_) -> Generate:
     """Anthropic SDK (Claude). Needs `anthropic` + ANTHROPIC_API_KEY or `ant auth login`.
@@ -877,6 +887,11 @@ def main() -> int:
     ap.add_argument("--base-url", default=None,
                     help="OpenAI-compatible base URL (openai backend: Copilot, Azure, gateways)")
     ap.add_argument("--out", help="Output dir for the generated notebook")
+    ap.add_argument("--verify", choices=["structural", "compile", "behavioral"], default=None,
+                    help="Run verification after generation; fix/re-verify failing LLM cells")
+    ap.add_argument("--max-iters", type=int, default=3,
+                    help="Max fix/re-verify iterations (with --verify)")
+    ap.add_argument("--report", help="Write verification findings JSON here")
     args = ap.parse_args()
 
     pkg = json.loads(Path(args.ir_json).read_text())
@@ -912,6 +927,15 @@ def main() -> int:
         results[p["node"]] = generate(SYSTEM_PROMPT, p["user_prompt"])
 
     notebook = assemble_notebook(pkg, prompts, results)
+
+    findings = []
+    if args.verify:
+        import verify as V
+        notebook, findings, iters = V.verify_and_fix(
+            pkg, prompts, results, generate, SYSTEM_PROMPT,
+            assemble_notebook, tier=args.verify, max_iters=args.max_iters)
+        print(V.format_report(findings, iters), file=sys.stderr)
+
     if args.out:
         out_path = Path(args.out) / f"{pkg['package']}.py"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -919,7 +943,9 @@ def main() -> int:
         print(f"Notebook written to: {out_path}", file=sys.stderr)
     else:
         print(notebook)
-    return 0
+    if args.report:
+        Path(args.report).write_text(json.dumps(findings, indent=2))
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":
