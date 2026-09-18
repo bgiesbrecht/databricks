@@ -1,0 +1,19 @@
+# REST Community Connector Spec
+display_name: REST API
+connection:
+  parameters:
+    - name: base_url
+      type: string
+      required: true
+      description: >
+        Base URL of the REST API, e.g.
+        https://<your-api-host>.example.com
+    - name: token
+      type: string
+      required: true
+      secret: true
+      description: >
+        Bearer token sent as "Authorization: Bearer <token>".
+
+# Table-level options passed through the UC connection's externalOptionsAllowList.
+external_options_allowlist: "limit,after"

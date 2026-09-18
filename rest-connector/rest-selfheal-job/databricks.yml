@@ -1,0 +1,76 @@
+# Databricks Asset Bundle for the REST ingestion self-heal Job.
+#
+# Before deploying: set targets.*.workspace.host (+ prod root_path / run_as) below, and
+# set var.pipeline_id to your SCD1 ingestion pipeline id (or pass --var pipeline_id=<id>).
+#
+# Deploy (dev):  DATABRICKS_CONFIG_PROFILE=<profile> databricks bundle deploy -t dev
+# Deploy (prod): DATABRICKS_CONFIG_PROFILE=<profile> databricks bundle deploy -t prod
+#
+# SCOPE: this bundle manages the scheduled self-healing JOB. The two ingestion
+# pipelines and the UC connection are NOT codified here because this Databricks CLI
+# (v0.299.2) does not model them: `resources.connections` is an unknown field, and
+# the managed-ingestion `source_type: COMMUNITY` (custom/community connectors, Beta)
+# is not a recognized value. They are created/managed with the community-connector
+# CLI instead — see ORCHESTRATION.md "Prerequisites (CLI-managed)". Revisit codifying
+# them when the CLI adds support.
+bundle:
+  name: rest-selfheal
+
+variables:
+  pipeline_id:
+    description: The deployed rest (SCD1) ingestion pipeline id the job drives
+    default: REPLACE_WITH_YOUR_SCD1_PIPELINE_ID
+  notify_email:
+    description: Job-failure alert recipient (fires only if the self-heal ALSO fails)
+    default: you@example.com
+
+resources:
+  jobs:
+    rest_ingest_selfheal:
+      name: REST ingest (self-healing)
+      description: >-
+        Runs the rest ingestion pipeline incrementally and auto-recovers
+        breaking schema changes with a selective full refresh of the failed table(s).
+      tasks:
+        - task_key: run_selfheal
+          spark_python_task:
+            python_file: ./pipeline_run_selfheal.py
+            parameters:
+              - "--pipeline-id"
+              - "${var.pipeline_id}"
+          environment_key: selfheal_env
+      environments:
+        - environment_key: selfheal_env
+          spec:
+            client: "3"
+            dependencies:
+              - databricks-sdk
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"   # daily 06:00
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${var.notify_email}
+      queue:
+        enabled: true
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://<your-workspace>.azuredatabricks.net
+
+  prod:
+    mode: production
+    workspace:
+      host: https://<your-workspace>.azuredatabricks.net
+      root_path: /Workspace/Users/<you@example.com>/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      user_name: <you@example.com>
+    resources:
+      jobs:
+        rest_ingest_selfheal:
+          schedule:
+            pause_status: UNPAUSED

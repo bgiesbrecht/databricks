@@ -1,0 +1,16 @@
+connection_name: rest_conn
+objects:
+  - table:
+      source_table: members
+      destination_catalog: <catalog>
+      destination_schema: rest_scd2
+      table_configuration:
+        scd_type: SCD_TYPE_2
+        primary_keys: [member_id]
+  - table:
+      source_table: advances
+      destination_catalog: <catalog>
+      destination_schema: rest_scd2
+      table_configuration:
+        scd_type: SCD_TYPE_2
+        primary_keys: [advance_id]

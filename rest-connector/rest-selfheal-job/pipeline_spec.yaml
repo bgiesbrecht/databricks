@@ -1,0 +1,12 @@
+connection_name: rest_conn
+objects:
+  - table: {source_table: members}
+  - table: {source_table: advances}
+  - table: {source_table: mpf_mortgage_loans}
+  - table: {source_table: collateral_pledges}
+  - table: {source_table: capital_stock}
+  - table: {source_table: member_contacts}
+  - table: {source_table: employees}
+  - table: {source_table: member_support_export}
+  - table: {source_table: products_reference}
+  - table: {source_table: data_dictionary}
