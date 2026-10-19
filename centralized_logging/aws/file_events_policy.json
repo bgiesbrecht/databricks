@@ -1,0 +1,58 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ManagedFileEventsSetupStatement",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetBucketNotification",
+                "s3:PutBucketNotification",
+                "sns:ListSubscriptionsByTopic",
+                "sns:GetTopicAttributes",
+                "sns:SetTopicAttributes",
+                "sns:CreateTopic",
+                "sns:TagResource",
+                "sns:Publish",
+                "sns:Subscribe",
+                "sqs:CreateQueue",
+                "sqs:DeleteMessage",
+                "sqs:ReceiveMessage",
+                "sqs:SendMessage",
+                "sqs:GetQueueUrl",
+                "sqs:GetQueueAttributes",
+                "sqs:SetQueueAttributes",
+                "sqs:TagQueue",
+                "sqs:ChangeMessageVisibility",
+                "sqs:PurgeQueue"
+            ],
+            "Resource": [
+                "arn:aws:s3:::<BUCKET>",
+                "arn:aws:sqs:*:*:*",
+                "arn:aws:sns:*:*:*"
+            ]
+        },
+        {
+            "Sid": "ManagedFileEventsListStatement",
+            "Effect": "Allow",
+            "Action": [
+                "sqs:ListQueues",
+                "sqs:ListQueueTags",
+                "sns:ListTopics"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "ManagedFileEventsTeardownStatement",
+            "Effect": "Allow",
+            "Action": [
+                "sns:Unsubscribe",
+                "sns:DeleteTopic",
+                "sqs:DeleteQueue"
+            ],
+            "Resource": [
+                "arn:aws:sqs:*:*:*",
+                "arn:aws:sns:*:*:*"
+            ]
+        }
+    ]
+}

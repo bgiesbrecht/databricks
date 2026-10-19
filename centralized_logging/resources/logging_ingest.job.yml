@@ -1,0 +1,23 @@
+# Runs the ingest pipeline whenever new log files land in the volume.
+resources:
+  jobs:
+    logging_ingest_trigger:
+      name: centralized-logging-trigger
+      trigger:
+        pause_status: UNPAUSED
+        file_arrival:
+          url: /Volumes/${resources.volumes.application_logs.catalog_name}/${resources.volumes.application_logs.schema_name}/${resources.volumes.application_logs.name}/
+      tasks:
+        - task_key: Ingest_logs_FE
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.logging_ingest.id}
+            full_refresh: false
+          email_notifications:
+            on_failure:
+              - ${var.notification_email}
+          notification_settings:
+            no_alert_for_skipped_runs: true
+            no_alert_for_canceled_runs: true
+      queue:
+        enabled: true
+      performance_target: PERFORMANCE_OPTIMIZED

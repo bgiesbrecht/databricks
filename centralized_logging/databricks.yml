@@ -1,0 +1,45 @@
+# Centralized logging: structlog -> S3 -> external Volume -> Auto Loader (SDP) -> bronze table.
+# AWS-side setup (bucket, IAM role, storage credential) is a prerequisite; see README.md.
+bundle:
+  name: centralized_logging
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Catalog holding the logs volume and bronze table
+  schema:
+    description: Schema holding the logs volume and bronze table
+  storage_credential:
+    description: Name of the UC storage credential backed by the IAM role with S3 + file events access
+  s3_bucket:
+    description: S3 bucket logs are written to
+  s3_logs_prefix:
+    description: Prefix within the bucket where log files land (backs the external Volume)
+    default: logs/application_logs
+  external_location_name:
+    description: Name of the UC external location over the bucket
+  volume_name:
+    description: Name of the external Volume over the logs prefix
+  notification_email:
+    description: Address notified when the ingest job fails
+    default: ${workspace.current_user.userName}
+  # Auto Loader cleanSource handling for already-ingested files: OFF, DELETE, or MOVE
+  clean_source:
+    default: "OFF"
+  clean_source_retention:
+    default: 30 days
+  clean_source_move_destination:
+    description: Only used when clean_source is MOVE (e.g. s3://my-bucket/archive/)
+    default: ""
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

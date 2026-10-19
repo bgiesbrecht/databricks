@@ -1,0 +1,10 @@
+resources:
+  volumes:
+    application_logs:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: ${var.volume_name}
+      volume_type: EXTERNAL
+      # Referencing the external location makes deploy create it before the volume
+      storage_location: ${resources.external_locations.logs_location.url}${var.s3_logs_prefix}
+      comment: Landing zone for JSONL application logs

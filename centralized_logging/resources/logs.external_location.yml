@@ -1,0 +1,14 @@
+# External location over the logging bucket with managed file events (SNS/SQS)
+# so Auto Loader and the job's file arrival trigger don't need directory listing.
+# If this already exists in the workspace, bind it instead of recreating:
+#   databricks bundle deployment bind logs_location <name>
+resources:
+  external_locations:
+    logs_location:
+      name: ${var.external_location_name}
+      url: s3://${var.s3_bucket}/
+      credential_name: ${var.storage_credential}
+      comment: Centralized application logs
+      enable_file_events: true
+      file_event_queue:
+        managed_sqs: {}

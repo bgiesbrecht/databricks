@@ -1,0 +1,18 @@
+resources:
+  pipelines:
+    logging_ingest:
+      name: centralized-logging-ingest
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      photon: true
+      root_path: ../src/pipeline
+      libraries:
+        - glob:
+            include: ../src/pipeline/**
+      configuration:
+        pipelines.clusterShutdown.delay: 300s
+        logs_path: /Volumes/${resources.volumes.application_logs.catalog_name}/${resources.volumes.application_logs.schema_name}/${resources.volumes.application_logs.name}
+        clean_source: ${var.clean_source}
+        clean_source_retention: ${var.clean_source_retention}
+        clean_source_move_destination: ${var.clean_source_move_destination}
